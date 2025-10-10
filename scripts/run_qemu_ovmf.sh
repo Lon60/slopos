@@ -5,11 +5,71 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OVMF_DIR="${REPO_ROOT}/third_party/ovmf"
 OVMF_CODE="${OVMF_DIR}/OVMF_CODE.fd"
 OVMF_VARS_TEMPLATE="${OVMF_DIR}/OVMF_VARS.fd"
-OVMF_VARS_RUNTIME="${OVMF_DIR}/OVMF_VARS.runtime.fd"
 ISO_PATH="${1:-${REPO_ROOT}/slop.iso}"
+
+warn() {
+  echo "$*" >&2
+}
+
+check_iso_bootability() {
+  if ! command -v xorriso >/dev/null 2>&1; then
+    warn "xorriso not found; skipping ISO bootability inspection"
+    return 0
+  fi
+
+  local report
+  if ! report="$(xorriso -indev "${ISO_PATH}" -report_el_torito plain 2>/dev/null)"; then
+    warn "Failed to inspect El Torito catalog for ${ISO_PATH}"
+    return 0
+  fi
+
+  local boot_line
+  boot_line="$(awk '/El Torito boot img/{print}' <<<"${report}" | head -n1)"
+  if [ -z "${boot_line}" ]; then
+    warn "No El Torito boot image entry found in ${ISO_PATH}"
+    return 0
+  fi
+
+  # Example line:
+  # El Torito boot img :   1  BIOS  y   none  0x0000  0x00      4          37
+  local platform
+  platform="$(awk '{print $7}' <<<"${boot_line}")"
+
+  if [ "${platform}" != "UEFI" ]; then
+    warn "Detected ${platform:-unknown} El Torito platform in ${ISO_PATH} – OVMF expects a UEFI entry"
+    warn "Rebuild the ISO with a UEFI boot catalog (e.g. grub-mkrescue or xorriso -eltorito-alt-boot)"
+    return 1
+  fi
+
+  local path_line boot_path
+  path_line="$(awk '/El Torito img path/{print}' <<<"${report}" | head -n1)"
+  boot_path="$(awk '{print $7}' <<<"${path_line}")"
+
+  if [ -z "${boot_path}" ]; then
+    warn "El Torito boot path could not be determined for ${ISO_PATH}"
+    return 0
+  fi
+
+  if [ "${boot_path}" != "/EFI/BOOT/BOOTX64.EFI" ]; then
+    warn "Unexpected UEFI boot path ${boot_path} (expected /EFI/BOOT/BOOTX64.EFI)"
+  fi
+
+  echo "Verified UEFI boot catalog entry (${boot_path}) in ${ISO_PATH}"
+  return 0
+}
+
+cleanup_vars_copy() {
+  if [ -n "${OVMF_VARS_RUNTIME:-}" ] && [ -f "${OVMF_VARS_RUNTIME}" ]; then
+    rm -f "${OVMF_VARS_RUNTIME}"
+  fi
+}
 
 if [ ! -f "${ISO_PATH}" ]; then
   echo "ISO image not found at ${ISO_PATH}. Build the kernel and generate slop.iso first." >&2
+  exit 1
+fi
+
+if ! check_iso_bootability; then
   exit 1
 fi
 
@@ -22,6 +82,8 @@ if [ ! -f "${OVMF_CODE}" ] || [ ! -f "${OVMF_VARS_TEMPLATE}" ]; then
   "${REPO_ROOT}/scripts/setup_ovmf.sh"
 fi
 
+OVMF_VARS_RUNTIME="$(mktemp "${OVMF_DIR}/OVMF_VARS.runtime.XXXXXX.fd")"
+trap cleanup_vars_copy EXIT INT TERM
 cp "${OVMF_VARS_TEMPLATE}" "${OVMF_VARS_RUNTIME}"
 
 exec qemu-system-x86_64 \
@@ -30,5 +92,7 @@ exec qemu-system-x86_64 \
   -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
   -drive if=pflash,format=raw,file="${OVMF_VARS_RUNTIME}" \
   -cdrom "${ISO_PATH}" \
-  -serial stdio \
-  -monitor none
+  -boot order=d,menu=on \
+  -serial mon:stdio \
+  -display none \
+  -vga none

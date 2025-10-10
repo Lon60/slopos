@@ -124,15 +124,27 @@ Build system: **Meson + LLVM/Clang** cross setup.
 
 ## Testing
 
-* Run under **QEMU** with **OVMF** firmware:
-  Remember you cannot close qemu nor qemu windows you have to use log files and timeouts
+  * Run under **QEMU** with **OVMF** firmware:
+    Remember you cannot close qemu nor qemu windows you have to use log files and timeouts
 
-  ```
-  scripts/run_qemu_ovmf.sh
-  ```
+    Install the emulator and firmware once on a fresh environment:
 
-  The helper script downloads the required OVMF firmware (via `scripts/setup_ovmf.sh`) the first time it is invoked and starts
-  QEMU with the correct UEFI flags. Pass a custom ISO path as an argument when needed.
+    ```
+    sudo apt-get install -y qemu-system-x86 ovmf
+    ```
+
+    Then boot the ISO headlessly:
+
+    ```
+    scripts/run_qemu_ovmf.sh
+    ```
+
+    The helper script now prefers the distro-provided firmware (via `scripts/setup_ovmf.sh`) and falls back to downloading when
+    needed. It launches QEMU without requiring a GUI, copying a fresh OVMF variables image each run so UEFI boots reliably from
+    the attached ISO. Pass a custom ISO path as an argument when needed. Before QEMU starts it inspects the ISO with `xorriso`
+    and aborts with guidance if the El Torito catalog does not advertise a UEFI boot image—this prevents the typical
+    `BdsDxe: failed to load Boot0001 ...` loop you see when `/EFI/BOOT/BOOTX64.EFI` is missing or baked in with BIOS-only
+    metadata.
 * Confirm:
 
   * Entry into long mode.
