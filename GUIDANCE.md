@@ -124,13 +124,15 @@ Build system: **Meson + LLVM/Clang** cross setup.
 
 ## Testing
 
-* Run under **QEMU**: 
+* Run under **QEMU** with **OVMF** firmware:
   Remember you cannot close qemu nor qemu windows you have to use log files and timeouts
 
   ```
-  qemu-system-x86_64 -serial stdio
+  scripts/run_qemu_ovmf.sh
   ```
-* Boot with GRUB2 UEFI (OVMF).
+
+  The helper script downloads the required OVMF firmware (via `scripts/setup_ovmf.sh`) the first time it is invoked and starts
+  QEMU with the correct UEFI flags. Pass a custom ISO path as an argument when needed.
 * Confirm:
 
   * Entry into long mode.
