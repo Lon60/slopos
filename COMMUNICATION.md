@@ -712,3 +712,89 @@ int font_console_puts(const char *str)
 - Integration with video console for scheduler output
 
 **Communication**: Graphics foundation complete, scheduler implementation can begin with full visual output capabilities.
+
+## CRITICAL FOUNDATION ISSUE: IDT and Exception Handling - URGENT
+
+**2024-10-11 14:00** kernel-architect idt_coordination [memory-system-architect,build-test-debug-agent]: CRITICAL MISSING FOUNDATION - No IDT setup exists, causing crashes into UEFI firmware handlers.
+
+### URGENT Issue Analysis:
+❌ **No IDT (Interrupt Descriptor Table)**: System has NO interrupt handling whatsoever
+❌ **UEFI IDT Active**: Current IDTR shows firmware IDT (000000001F010018), not kernel IDT
+❌ **Exception Crashes**: Page faults crash into UEFI firmware handler instead of kernel
+❌ **No Timer Interrupts**: Context switching impossible without proper interrupt infrastructure
+❌ **Debug Impossible**: Cannot properly debug memory issues without exception handlers
+
+### Root Cause:
+```
+IDTR - 000000001F010018 0000000000000FFF  # <-- This is UEFI's IDT, not ours!
+```
+Kernel is running with UEFI's interrupt handlers, not our own. Any exception immediately crashes the system.
+
+### Critical Implementation Requirements:
+
+#### 1. memory-system-architect Tasks:
+**Priority 1 - IDT Infrastructure:**
+- Create `drivers/idt.c` - IDT setup with 256 interrupt descriptors
+- Implement IDT loading and management functions
+- Create proper kernel interrupt stack setup
+
+**Priority 2 - Exception Handlers:**
+- Create `drivers/exceptions.s` - Assembly exception handler stubs for all x86_64 exceptions
+- Implement page fault handler (#PF) with memory state debugging
+- Implement general protection fault (#GP) and double fault (#DF) handlers
+
+**Priority 3 - Debug Integration:**
+- Exception handlers must output debug info via serial (kprint functions)
+- Page fault handler should dump memory mapping state and registers
+- Integration with existing memory management for exception stack allocation
+
+#### 2. build-test-debug-agent Tasks:
+**Priority 1 - Interrupt Control:**
+- Create `drivers/pic.c` - Basic PIC initialization to disable legacy interrupts
+- Implement interrupt masking and control functions
+- Prepare for APIC initialization (future)
+
+**Priority 2 - Exception Testing:**
+- Create controlled exception test to verify IDT functionality
+- Implement exception handler registration and testing framework
+- Verify exception handling works before memory management debugging
+
+#### 3. Integration Requirements:
+**Boot Sequence Changes:**
+- IDT must be loaded IMMEDIATELY after GDT setup in early boot
+- Load IDT BEFORE any paging operations or memory management
+- Exception handlers need access to serial driver for debug output
+- All 256 interrupt vectors need default handlers
+
+**Memory Integration:**
+- Exception handlers need kernel stack allocation
+- Page fault handler must integrate with memory management debug
+- Exception context must be preserved for debugging
+
+**Build Integration:**
+- Add drivers/idt.c, drivers/exceptions.s, drivers/pic.c to meson.build
+- Exception handlers need proper assembly/C linkage
+- Integration with existing boot/early_init.c initialization sequence
+
+### Implementation Order:
+1. **Phase 1**: Set up IDT structure and basic exception handlers (stubs)
+2. **Phase 2**: Load IDT in early boot sequence (before paging)
+3. **Phase 3**: Implement page fault handler with memory debugging
+4. **Phase 4**: Test exception handling with controlled fault
+5. **Phase 5**: Fix higher-half mapping issues with proper error handling
+
+### Expected Outcome:
+- Kernel exceptions handled by our code, not UEFI firmware
+- Page fault debugging with memory state output
+- Proper foundation for context switching and timer interrupts
+- Ability to debug memory management issues properly
+
+### Coordination Protocol:
+```
+<time> memory-system-architect idt_implementation [build-test-debug-agent]: <status>
+<time> build-test-debug-agent pic_implementation [memory-system-architect]: <status>
+```
+
+**BLOCKING ISSUE**: Without IDT, kernel debugging is impossible and system crashes into firmware. This is the critical missing foundation that must be implemented before any other development can proceed effectively.
+
+**Status**: URGENT - All other development blocked until exception handling foundation established.

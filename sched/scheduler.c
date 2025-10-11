@@ -9,11 +9,14 @@
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
 
+/* Include task and scheduler definitions */
+#include "task.h"
+
 /* Forward declarations from task.c */
-typedef struct task task_t;
 extern task_t *task_get_current(void);
 extern void task_set_current(task_t *task);
 extern int task_set_state(uint32_t task_id, uint8_t new_state);
+extern int task_get_info(uint32_t task_id, task_t **task_info);
 
 /* Forward declarations from context_switch.s */
 extern void context_switch(void *old_context, void *new_context);

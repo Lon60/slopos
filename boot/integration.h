@@ -63,6 +63,22 @@ extern uint32_t get_current_task_id(void);
 extern uint32_t get_task_count(void);
 
 /* ========================================================================
+ * INTERRUPT AND EXCEPTION HANDLING INTEGRATION (COMPLETE)
+ * ======================================================================== */
+
+/* IDT initialization and management functions */
+extern void init_idt(void);
+extern void load_idt(void);
+extern int is_idt_initialized(void);
+extern void dump_idt(void);
+extern int verify_idt_integrity(void);
+
+/* Exception handling functions */
+extern void verify_memory_mapping(uint64_t virtual_addr);
+extern void analyze_page_fault(uint64_t fault_addr, uint64_t error_code);
+extern void dump_stack_trace(uint64_t rbp, uint64_t rip);
+
+/* ========================================================================
  * INTEGRATION HELPER MACROS AND CONSTANTS
  * ======================================================================== */
 
@@ -70,7 +86,8 @@ extern uint32_t get_task_count(void);
 #define SUBSYSTEM_MEMORY_READY    0x01
 #define SUBSYSTEM_VIDEO_READY     0x02
 #define SUBSYSTEM_SCHEDULER_READY 0x04
-#define SUBSYSTEM_ALL_READY       0x07
+#define SUBSYSTEM_IDT_READY       0x08
+#define SUBSYSTEM_ALL_READY       0x0F
 
 /* Color definitions for video subsystem */
 #define COLOR_BLACK     0x00000000

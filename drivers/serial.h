@@ -41,6 +41,12 @@ typedef struct {
 #define SERIAL_STOP_BITS_1    1   /* 1 stop bit */
 #define SERIAL_STOP_BITS_2    2   /* 2 stop bits */
 
+/* Standard COM port addresses */
+#define SERIAL_COM1_PORT      0x3F8   /* COM1 port */
+#define SERIAL_COM2_PORT      0x2F8   /* COM2 port */
+#define SERIAL_COM3_PORT      0x3E8   /* COM3 port */
+#define SERIAL_COM4_PORT      0x2E8   /* COM4 port */
+
 /* Common baud rates */
 #define SERIAL_BAUD_9600      9600
 #define SERIAL_BAUD_19200     19200
@@ -177,6 +183,25 @@ void kprint_hex(uint64_t value);
  * Kernel print decimal value
  */
 void kprint_decimal(uint64_t value);
+
+/*
+ * Kernel print decimal value (short alias)
+ */
+static inline void kprint_dec(uint64_t value) {
+    kprint_decimal(value);
+}
+
+/*
+ * Kernel print hex byte
+ */
+void kprint_hex_byte(uint8_t value);
+
+/*
+ * Kernel print character
+ */
+static inline void kprint_char(char c) {
+    serial_putc(SERIAL_COM1_PORT, c);
+}
 
 /* ========================================================================
  * ADVANCED SERIAL FUNCTIONS

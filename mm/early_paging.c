@@ -18,10 +18,18 @@ void kernel_panic(const char *message);
 
 /* Early boot memory regions that need identity mapping */
 #define EARLY_IDENTITY_START          0x00000000      /* Start of identity map */
-#define EARLY_IDENTITY_SIZE           0x200000        /* 2MB of identity mapping */
+#define EARLY_IDENTITY_SIZE           0x200000        /* 2MB of low memory identity mapping */
 
-/* Kernel physical and virtual addresses */
-#define KERNEL_PHYSICAL_START         0x100000        /* 1MB - where GRUB loads kernel */
+/* GRUB-loaded kernel physical location (discovered at runtime) */
+#define GRUB_KERNEL_REGION_START      0x1B000000      /* ~432MB - typical GRUB load address */
+#define GRUB_KERNEL_REGION_SIZE       0x01000000      /* 16MB region for kernel */
+
+/* Stack region that needs identity mapping */
+#define STACK_REGION_START            0x1FE90000      /* ~510MB - typical stack region */
+#define STACK_REGION_SIZE             0x00010000      /* 64KB stack region */
+
+/* Traditional kernel addresses (for reference) */
+#define KERNEL_PHYSICAL_START         0x100000        /* 1MB - traditional load address */
 #define KERNEL_PHYSICAL_SIZE          0x100000        /* 1MB initial kernel size */
 
 /* Page table manipulation macros */
@@ -33,7 +41,8 @@ extern uint64_t _kernel_start;
 extern uint64_t _kernel_end;
 extern uint64_t early_pml4;
 extern uint64_t early_pdpt;
-extern uint64_t early_pd;
+extern uint64_t early_pd_identity;
+extern uint64_t early_pd_kernel;
 
 /* ========================================================================
  * PAGE TABLE STRUCTURES
@@ -48,10 +57,12 @@ typedef struct {
 typedef struct early_paging {
     page_table_t *pml4;           /* PML4 table pointer */
     page_table_t *pdpt;           /* PDPT table pointer */
-    page_table_t *pd;             /* PD table pointer */
+    page_table_t *pd_identity;    /* Identity mapping PD table pointer */
+    page_table_t *pd_kernel;      /* Higher-half kernel PD table pointer */
     uint64_t pml4_phys;           /* Physical address of PML4 */
     uint64_t pdpt_phys;           /* Physical address of PDPT */
-    uint64_t pd_phys;             /* Physical address of PD */
+    uint64_t pd_identity_phys;    /* Physical address of identity PD */
+    uint64_t pd_kernel_phys;      /* Physical address of kernel PD */
     uint32_t initialized;         /* Initialization flag */
 } early_paging_t;
 
@@ -110,17 +121,20 @@ static int init_early_page_tables(void) {
     /* Get pointers to early page tables from linker */
     early_paging.pml4 = (page_table_t*)&early_pml4;
     early_paging.pdpt = (page_table_t*)&early_pdpt;
-    early_paging.pd = (page_table_t*)&early_pd;
+    early_paging.pd_identity = (page_table_t*)&early_pd_identity;
+    early_paging.pd_kernel = (page_table_t*)&early_pd_kernel;
 
     /* Calculate physical addresses */
     early_paging.pml4_phys = (uint64_t)early_paging.pml4;
     early_paging.pdpt_phys = (uint64_t)early_paging.pdpt;
-    early_paging.pd_phys = (uint64_t)early_paging.pd;
+    early_paging.pd_identity_phys = (uint64_t)early_paging.pd_identity;
+    early_paging.pd_kernel_phys = (uint64_t)early_paging.pd_kernel;
 
     /* Verify alignment */
     if (!verify_page_table_alignment(early_paging.pml4) ||
         !verify_page_table_alignment(early_paging.pdpt) ||
-        !verify_page_table_alignment(early_paging.pd)) {
+        !verify_page_table_alignment(early_paging.pd_identity) ||
+        !verify_page_table_alignment(early_paging.pd_kernel)) {
         kprint("ERROR: Page tables not properly aligned\n");
         return -1;
     }
@@ -132,8 +146,11 @@ static int init_early_page_tables(void) {
     kprint("  PDPT: ");
     kprint_hex(early_paging.pdpt_phys);
     kprint("\n");
-    kprint("  PD: ");
-    kprint_hex(early_paging.pd_phys);
+    kprint("  PD Identity: ");
+    kprint_hex(early_paging.pd_identity_phys);
+    kprint("\n");
+    kprint("  PD Kernel: ");
+    kprint_hex(early_paging.pd_kernel_phys);
     kprint("\n");
 
     return 0;
@@ -141,7 +158,7 @@ static int init_early_page_tables(void) {
 
 /*
  * Set up identity mapping for early boot
- * Maps first 2MB of physical memory to same virtual addresses
+ * Maps critical memory regions where GRUB loaded the kernel and stack
  */
 static int setup_identity_mapping(void) {
     kprint("Setting up identity mapping for early boot\n");
@@ -149,21 +166,67 @@ static int setup_identity_mapping(void) {
     /* Zero out page tables */
     zero_page_table(early_paging.pml4);
     zero_page_table(early_paging.pdpt);
-    zero_page_table(early_paging.pd);
+    zero_page_table(early_paging.pd_identity);
+    zero_page_table(early_paging.pd_kernel);
 
     /* PML4[0] -> PDPT (for identity mapping) */
     early_paging.pml4->entries[0] = create_pte(early_paging.pdpt_phys,
                                                PAGE_PRESENT | PAGE_WRITABLE);
 
-    /* PDPT[0] -> PD (for first 1GB) */
-    early_paging.pdpt->entries[0] = create_pte(early_paging.pd_phys,
+    /* PDPT[0] -> Identity PD (for first 1GB identity mapping) */
+    early_paging.pdpt->entries[0] = create_pte(early_paging.pd_identity_phys,
                                                PAGE_PRESENT | PAGE_WRITABLE);
 
-    /* Map first 2MB using large pages in PD */
-    early_paging.pd->entries[0] = create_pte(0x000000,
-                                             PAGE_PRESENT | PAGE_WRITABLE | PAGE_SIZE);
+    /* Map first 2MB using large pages in identity PD (for low memory) */
+    early_paging.pd_identity->entries[0] = create_pte(0x000000,
+                                                       PAGE_PRESENT | PAGE_WRITABLE | PAGE_SIZE);
+    kprint("Identity mapped: 0x0 - 0x200000 (2MB low memory)\n");
 
-    kprint("Identity mapping: 0x0 - 0x200000 (2MB)\n");
+    /* Map GRUB kernel region using 2MB large pages */
+    uint64_t grub_start_2mb = GRUB_KERNEL_REGION_START & ~(PAGE_SIZE_2MB - 1);  /* Align to 2MB */
+    uint32_t grub_pages = (GRUB_KERNEL_REGION_SIZE + PAGE_SIZE_2MB - 1) / PAGE_SIZE_2MB;
+    uint32_t grub_pd_start = grub_start_2mb / PAGE_SIZE_2MB;
+
+    for (uint32_t i = 0; i < grub_pages; i++) {
+        uint32_t pd_idx = grub_pd_start + i;
+        if (pd_idx >= ENTRIES_PER_PAGE_TABLE) {
+            kprint("ERROR: GRUB region too large for single PD\n");
+            return -1;
+        }
+        early_paging.pd_identity->entries[pd_idx] = create_pte(grub_start_2mb + (i * PAGE_SIZE_2MB),
+                                                                PAGE_PRESENT | PAGE_WRITABLE | PAGE_SIZE);
+    }
+
+    kprint("Identity mapped GRUB region: ");
+    kprint_hex(grub_start_2mb);
+    kprint(" - ");
+    kprint_hex(grub_start_2mb + (grub_pages * PAGE_SIZE_2MB));
+    kprint(" (");
+    kprint_decimal(grub_pages);
+    kprint(" * 2MB pages)\n");
+
+    /* Map stack region using 2MB large pages */
+    uint64_t stack_start_2mb = STACK_REGION_START & ~(PAGE_SIZE_2MB - 1);  /* Align to 2MB */
+    uint32_t stack_pages = (STACK_REGION_SIZE + PAGE_SIZE_2MB - 1) / PAGE_SIZE_2MB;
+    uint32_t stack_pd_start = stack_start_2mb / PAGE_SIZE_2MB;
+
+    for (uint32_t i = 0; i < stack_pages; i++) {
+        uint32_t pd_idx = stack_pd_start + i;
+        if (pd_idx >= ENTRIES_PER_PAGE_TABLE) {
+            kprint("ERROR: Stack region too large for single PD\n");
+            return -1;
+        }
+        early_paging.pd_identity->entries[pd_idx] = create_pte(stack_start_2mb + (i * PAGE_SIZE_2MB),
+                                                                PAGE_PRESENT | PAGE_WRITABLE | PAGE_SIZE);
+    }
+
+    kprint("Identity mapped stack region: ");
+    kprint_hex(stack_start_2mb);
+    kprint(" - ");
+    kprint_hex(stack_start_2mb + (stack_pages * PAGE_SIZE_2MB));
+    kprint(" (");
+    kprint_decimal(stack_pages);
+    kprint(" * 2MB pages)\n");
 
     return 0;
 }
@@ -193,8 +256,8 @@ static int setup_kernel_mapping(void) {
     early_paging.pml4->entries[pml4_idx] = create_pte(early_paging.pdpt_phys,
                                                       PAGE_PRESENT | PAGE_WRITABLE);
 
-    /* PDPT[510] -> PD (for kernel region) */
-    early_paging.pdpt->entries[pdpt_idx] = create_pte(early_paging.pd_phys,
+    /* PDPT[510] -> Kernel PD (for kernel region) */
+    early_paging.pdpt->entries[pdpt_idx] = create_pte(early_paging.pd_kernel_phys,
                                                       PAGE_PRESENT | PAGE_WRITABLE);
 
     /* Map kernel using 2MB large pages */
@@ -209,8 +272,8 @@ static int setup_kernel_mapping(void) {
             return -1;
         }
 
-        early_paging.pd->entries[pd_entry] = create_pte(kernel_phys + (i * PAGE_SIZE_2MB),
-                                                        PAGE_PRESENT | PAGE_WRITABLE | PAGE_SIZE);
+        early_paging.pd_kernel->entries[pd_entry] = create_pte(kernel_phys + (i * PAGE_SIZE_2MB),
+                                                                PAGE_PRESENT | PAGE_WRITABLE | PAGE_SIZE);
     }
 
     kprint("Higher-half mapping: ");
@@ -250,6 +313,22 @@ static int verify_page_tables(void) {
         return -1;
     }
 
+    /* Verify GRUB region identity mapping */
+    uint32_t grub_pd_idx = GRUB_KERNEL_REGION_START / PAGE_SIZE_2MB;
+    uint64_t grub_pd_entry = early_paging.pd_identity->entries[grub_pd_idx];
+    if (!(grub_pd_entry & PAGE_PRESENT) || !(grub_pd_entry & PAGE_SIZE)) {
+        kprint("ERROR: GRUB region identity mapping missing\n");
+        return -1;
+    }
+
+    /* Verify stack region identity mapping */
+    uint32_t stack_pd_idx = STACK_REGION_START / PAGE_SIZE_2MB;
+    uint64_t stack_pd_entry = early_paging.pd_identity->entries[stack_pd_idx];
+    if (!(stack_pd_entry & PAGE_PRESENT) || !(stack_pd_entry & PAGE_SIZE)) {
+        kprint("ERROR: Stack region identity mapping missing\n");
+        return -1;
+    }
+
     /* Check PDPT entries */
     uint64_t pdpt_entry0 = early_paging.pdpt->entries[0];
     if (!(pdpt_entry0 & PAGE_PRESENT)) {
@@ -257,9 +336,9 @@ static int verify_page_tables(void) {
         return -1;
     }
 
-    /* Check PD entries */
-    uint64_t pd_entry0 = early_paging.pd->entries[0];
-    if (!(pd_entry0 & PAGE_PRESENT) || !(pd_entry0 & PAGE_SIZE)) {
+    /* Check identity PD entries */
+    uint64_t pd_identity_entry0 = early_paging.pd_identity->entries[0];
+    if (!(pd_identity_entry0 & PAGE_PRESENT) || !(pd_identity_entry0 & PAGE_SIZE)) {
         kprint("ERROR: Identity mapping PD[0] incorrect\n");
         return -1;
     }

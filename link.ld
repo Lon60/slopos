@@ -35,8 +35,10 @@ SECTIONS
   . = . + 0x1000;  /* 4KB for PML4 */
   early_pdpt = .;
   . = . + 0x1000;  /* 4KB for PDPT */
-  early_pd = .;
-  . = . + 0x1000;  /* 4KB for PD */
+  early_pd_identity = .;
+  . = . + 0x1000;  /* 4KB for identity mapping PD */
+  early_pd_kernel = .;
+  . = . + 0x1000;  /* 4KB for higher-half kernel PD */
 
   /* Kernel end symbol */
   _kernel_end = .;

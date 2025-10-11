@@ -3,15 +3,32 @@ project('slopos', 'c',
   default_options : [
     'c_std=c11',
     'warning_level=3',
-    'werror=false'
+    'werror=false',
+    'b_staticpic=false',
+    'b_lundef=false',
+    'buildtype=debug'
   ]
 )
+
+add_project_arguments([
+    '-ffreestanding',
+    '-fno-stack-protector',
+    '-fno-pic',
+    '-mno-red-zone',
+    '-mcmodel=kernel',
+    '-mabi=sysv',
+    '-Wall',
+    '-Wextra',
+    '-Wno-unused-parameter'
+  ],
+  language: 'c')
 
 # Source files organized by component
 boot_sources = []
 mm_sources = []
 video_sources = []
 drivers_sources = []
+sched_sources = []
 kernel_sources = []
 
 # Boot directory - assembly and early C code
@@ -21,9 +38,12 @@ boot_sources += files(
   'boot/entry32.s',
   'boot/gdt_setup.s',
   'boot/entry64.s',
+  'boot/idt_handlers.s',
   'boot/early_init.c',
   'boot/cpu_verify.c',
-  'boot/kernel_panic.c'
+  'boot/kernel_panic.c',
+  'boot/idt.c',
+  'boot/debug.c'
 )
 
 # Memory management directory
@@ -54,27 +74,52 @@ video_sources += files(
 # Drivers directory
 drivers_dir = meson.current_source_dir() / 'drivers'
 drivers_sources += files(
-  'drivers/serial.c'
+  'drivers/serial.c',
+  'drivers/pic.c',
+  'drivers/apic.c',
+  'drivers/interrupt_test.c'
+)
+
+# Scheduler directory
+sched_dir = meson.current_source_dir() / 'sched'
+sched_sources += files(
+  'sched/scheduler.c',
+  'sched/task.c',
+  'sched/test_tasks.c',
+  'sched/context_switch.s'
 )
 
 # Kernel main sources (root directory)
 kernel_sources += files()  # Will be populated when source files exist
 
 # Combine all source files
-all_sources = boot_sources + mm_sources + video_sources + drivers_sources + kernel_sources
+all_sources = boot_sources + mm_sources + video_sources + drivers_sources + sched_sources + kernel_sources
 
 # Include directories
-inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers')
+inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers', 'sched')
 
 # Custom target for assembly files (when they exist)
 # This will be used for boot assembly code that needs special handling
 
 # Main kernel executable
+linker_script = meson.current_source_dir() / 'link.ld'
+
 kernel_elf = executable('kernel',
   sources : all_sources,
   include_directories : inc_dirs,
+  c_args : [
+    '-O2',
+    '-fno-builtin'
+  ],
   link_args : [
-    '-T', meson.current_source_dir() / 'link.ld'
+    '-nostdlib',
+    '-static',
+    '-Wl,-T,' + linker_script,
+    '-Wl,-z,max-page-size=0x1000',
+    '-Wl,--build-id=none',
+    '-Wl,--gc-sections',
+    '-Wl,-n',
+    '-lgcc'
   ],
   link_depends : files('link.ld'),
   install : false,

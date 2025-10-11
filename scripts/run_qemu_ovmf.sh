@@ -58,11 +58,14 @@ check_iso_bootability() {
     return 0
   fi
 
-  if [ "${boot_path}" != "/EFI/BOOT/BOOTX64.EFI" ]; then
-    warn "Unexpected UEFI boot path ${boot_path} (expected /EFI/BOOT/BOOTX64.EFI)"
-  fi
-
-  echo "Verified UEFI boot catalog entry (${boot_path}) in ${ISO_PATH}"
+  case "${boot_path}" in
+    /EFI/BOOT/BOOTX64.EFI|/efiboot.img)
+      echo "Verified UEFI boot catalog entry (${boot_path}) in ${ISO_PATH}"
+      ;;
+    *)
+      warn "Unexpected UEFI boot path ${boot_path} (expected /EFI/BOOT/BOOTX64.EFI or /efiboot.img)"
+      ;;
+  esac
   return 0
 }
 
@@ -95,12 +98,16 @@ trap cleanup_vars_copy EXIT INT TERM
 cp "${OVMF_VARS_TEMPLATE}" "${OVMF_VARS_RUNTIME}"
 
 # Run the guest with serial output on stdio so Ctrl+C terminates QEMU cleanly.
+# Let QEMU wire the ISO through its default AHCI controller to match OVMF's
+# built-in Boot0002 DVD entry.
 exec qemu-system-x86_64 \
   -machine q35,accel=tcg \
   -m 512M \
   -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
   -drive if=pflash,format=raw,file="${OVMF_VARS_RUNTIME}" \
-  -cdrom "${ISO_PATH}" \
+  -device ich9-ahci,id=ahci0,bus=pcie.0,addr=0x3 \
+  -drive if=none,id=cdrom,media=cdrom,readonly=on,file="${ISO_PATH}" \
+  -device ide-cd,bus=ahci0.0,drive=cdrom,bootindex=0 \
   -boot order=d,menu=on \
   -serial stdio \
   -monitor none \

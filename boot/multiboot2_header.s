@@ -12,6 +12,13 @@ multiboot2_header_start:
     .long multiboot2_header_end - multiboot2_header_start  # Header length
     .long -(0xe85250d6 + 0x00000000 + (multiboot2_header_end - multiboot2_header_start))  # Checksum
 
+    # Entry address tag - Override ELF entry point
+    .align 8                        # Ensure 8-byte alignment
+    .short 0x0003                   # Type: Entry address
+    .short 0                        # Flags: Required
+    .long 12                        # Size of this tag
+    .long _start                    # Entry point address (force to our _start)
+
     # Information request tag - Request UEFI memory map
     .align 8                        # Ensure 8-byte alignment
     .short 0x0001                   # Type: Information request

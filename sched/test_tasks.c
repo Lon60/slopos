@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "task.h"
 
 /* Forward declarations from scheduler and task modules */
 extern void yield(void);

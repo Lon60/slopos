@@ -8,32 +8,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-
-/* Forward declarations */
-typedef struct task task_t;
-typedef void (*task_entry_t)(void *arg);
-
-/* Task states */
-#define TASK_STATE_INVALID            0
-#define TASK_STATE_READY              1
-#define TASK_STATE_RUNNING            2
-#define TASK_STATE_BLOCKED            3
-#define TASK_STATE_TERMINATED         4
-
-/* Task priorities */
-#define TASK_PRIORITY_HIGH            0
-#define TASK_PRIORITY_NORMAL          1
-#define TASK_PRIORITY_LOW             2
-#define TASK_PRIORITY_IDLE            3
-
-/* Task creation flags */
-#define TASK_FLAG_USER_MODE           0x01
-#define TASK_FLAG_KERNEL_MODE         0x02
-#define TASK_FLAG_NO_PREEMPT          0x04
-#define TASK_FLAG_SYSTEM              0x08
-
-/* Invalid task ID */
-#define INVALID_TASK_ID               0xFFFFFFFF
+#include "task.h"
 
 /* ========================================================================
  * TASK MANAGEMENT FUNCTIONS

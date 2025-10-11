@@ -7,6 +7,11 @@
 #include <stddef.h>
 #include "../drivers/serial.h"
 #include "constants.h"
+#include "idt.h"
+#include "debug.h"
+#include "../drivers/pic.h"
+#include "../drivers/apic.h"
+#include "../drivers/interrupt_test.h"
 
 // Forward declarations for other modules
 extern void verify_cpu_state(void);
@@ -14,8 +19,15 @@ extern void verify_memory_layout(void);
 extern void check_stack_health(void);
 extern void kernel_panic(const char *message);
 extern void init_paging(void);
+extern int init_early_paging(void);
 extern void init_kernel_memory_layout(void);
 extern void parse_multiboot2_info(uint64_t multiboot_info_addr);
+
+// IDT and interrupt handling
+extern void init_idt(void);
+extern void init_pic(void);
+extern void dump_idt(void);
+extern void load_idt(void);
 
 // Kernel state tracking
 static volatile int kernel_initialized = 0;
@@ -65,6 +77,36 @@ uint64_t get_multiboot2_info(void) {
 static void initialize_kernel_subsystems(void) {
     early_debug_string("SlopOS: Initializing kernel subsystems\n");
 
+    // Initialize debug subsystem first
+    debug_init();
+    early_debug_string("SlopOS: Debug subsystem initialized\n");
+
+    // Initialize IDT FIRST - critical for debugging any issues that follow
+    early_debug_string("SlopOS: Initializing IDT...\n");
+    idt_init();
+    idt_load();
+    early_debug_string("SlopOS: IDT initialized - exception handling active\n");
+
+    // Initialize PIC for interrupt control
+    early_debug_string("SlopOS: Initializing PIC...\n");
+    pic_init();
+    early_debug_string("SlopOS: PIC initialized - interrupt control ready\n");
+
+    // Detect and optionally initialize APIC
+    if (apic_detect()) {
+        if (apic_init() == 0) {
+            early_debug_string("SlopOS: APIC initialized\n");
+        } else {
+            early_debug_string("SlopOS: APIC initialization failed, using PIC\n");
+        }
+    } else {
+        early_debug_string("SlopOS: APIC not available, using PIC only\n");
+    }
+
+    // Initialize interrupt test framework
+    interrupt_test_init();
+    early_debug_string("SlopOS: Interrupt test framework initialized\n");
+
     // Parse Multiboot2 information first if available
     if (multiboot2_info_addr != 0) {
         parse_multiboot2_info(multiboot2_info_addr);
@@ -73,9 +115,16 @@ static void initialize_kernel_subsystems(void) {
         early_debug_string("SlopOS: No multiboot2 info available\n");
     }
 
-    // Initialize paging system
+    // Initialize early paging system (identity + higher-half mapping)
+    if (init_early_paging() != 0) {
+        early_debug_string("SlopOS: Early paging initialization failed\n");
+        kernel_panic("Early paging setup failed");
+    }
+    early_debug_string("SlopOS: Early paging system initialized\n");
+
+    // Initialize full paging system
     init_paging();
-    early_debug_string("SlopOS: Paging system initialized\n");
+    early_debug_string("SlopOS: Full paging system initialized\n");
 
     // Initialize kernel memory layout
     init_kernel_memory_layout();
@@ -97,6 +146,10 @@ static void initialize_kernel_subsystems(void) {
  * Following SysV ABI - first parameter in RDI.
  */
 void kernel_main(uint64_t multiboot_info) {
+    // Initialize IDT IMMEDIATELY - before ANYTHING else for debugging
+    init_idt();
+    load_idt();
+
     // Store multiboot2 info for later use
     set_multiboot2_info(multiboot_info);
 
@@ -136,6 +189,24 @@ current_location:
     initialize_kernel_subsystems();
     kprintln("Kernel subsystem initialization complete.");
 
+    // Test interrupt/exception handling system
+    kprintln("Testing interrupt/exception handling system...");
+    kprintln("Running basic exception tests to verify IDT functionality...");
+
+    int tests_passed = run_basic_exception_tests();
+    kprint("Exception handling tests completed - ");
+    kprint_dec(tests_passed);
+    kprintln(" tests passed");
+
+    // Dump system state for debugging
+    kprintln("Dumping interrupt controller state:");
+    pic_dump_state();
+    if (apic_is_available()) {
+        apic_dump_state();
+    }
+
+    kprintln("Exception handling system verification complete");
+
     // Initialize video subsystem (video-pipeline-architect)
     kprintln("Initializing framebuffer graphics system...");
     extern int framebuffer_init(void);
@@ -171,7 +242,25 @@ current_location:
         kprintln("WARNING: Framebuffer initialization failed - no graphics available");
     }
 
-    // TODO: Initialize scheduler subsystem (kernel-scheduler-manager)
+    // TODO: Initialize scheduler subsystem later - skip for now to test basic boot
+    kprintln("Scheduler initialization skipped for basic boot test");
+
+    // TEST CRITICAL: Verify exception handling works
+    kprintln("=== TESTING EXCEPTION HANDLING ===");
+    kprintln("Current IDT should handle exceptions instead of UEFI firmware");
+
+    // Add prototypes for test functions
+    extern void trigger_divide_exception(void);
+    extern void trigger_page_fault(void);
+
+    kprintln("Testing divide-by-zero exception in 3 seconds...");
+    // Simple delay
+    for (volatile int i = 0; i < 100000000; i++) { /* wait */ }
+
+    kprintln("Triggering divide-by-zero - IDT should catch this!");
+    trigger_divide_exception();  // This should be handled by our IDT
+
+    kprintln("ERROR: Should not reach here - exception handler failed!");
 
     kprintln("Kernel initialization complete.");
     kprintln("Entering infinite loop - MVP SUCCESS!");

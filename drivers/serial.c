@@ -496,3 +496,12 @@ int serial_self_test(uint16_t port) {
     outb(port + SERIAL_MODEM_CTRL_REG, original_mcr);
     return SERIAL_ERROR_NONE;
 }
+
+/*
+ * Print hex byte (2 digits)
+ */
+void kprint_hex_byte(uint8_t value) {
+    static const char hex_chars[] = "0123456789ABCDEF";
+    serial_putc(SERIAL_COM1_PORT, hex_chars[(value >> 4) & 0xF]);
+    serial_putc(SERIAL_COM1_PORT, hex_chars[value & 0xF]);
+}
