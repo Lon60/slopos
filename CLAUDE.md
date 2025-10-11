@@ -24,6 +24,9 @@ grub-mkstandalone \
   -O x86_64-efi \
   -o BOOTX64.EFI \
   "iso/boot/grub/grub.cfg=grub.cfg"
+
+# Package ISO with UEFI El Torito entry
+scripts/build_iso.sh builddir/slop.iso
 ```
 
 ### Testing

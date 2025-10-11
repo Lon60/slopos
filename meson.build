@@ -93,3 +93,17 @@ kernel_iso_copy = custom_target('kernel_iso_copy',
   build_by_default : true,
   depends : kernel_elf
 )
+
+build_iso_script = meson.current_source_dir() / 'scripts' / 'build_iso.sh'
+
+slop_iso = custom_target('slop_iso',
+  input : [
+    kernel_iso_copy,
+    files('iso/EFI/BOOT/BOOTX64.EFI'),
+    files('iso/boot/grub/grub.cfg'),
+  ],
+  output : 'slop.iso',
+  command : [build_iso_script, '@OUTPUT@'],
+  build_by_default : true,
+  depends : kernel_iso_copy
+)

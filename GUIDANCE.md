@@ -133,6 +133,13 @@ Build system: **Meson + LLVM/Clang** cross setup.
     sudo apt-get install -y qemu-system-x86 ovmf
     ```
 
+    Build the UEFI ISO (ensures `/EFI/BOOT/BOOTX64.EFI` is published via the El Torito catalog):
+
+    ```
+    # After compiling the kernel (meson compile -C builddir)
+    scripts/build_iso.sh builddir/slop.iso
+    ```
+
     Then boot the ISO headlessly:
 
     ```

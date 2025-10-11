@@ -5,7 +5,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OVMF_DIR="${REPO_ROOT}/third_party/ovmf"
 OVMF_CODE="${OVMF_DIR}/OVMF_CODE.fd"
 OVMF_VARS_TEMPLATE="${OVMF_DIR}/OVMF_VARS.fd"
-ISO_PATH="${1:-${REPO_ROOT}/slop.iso}"
+DEFAULT_ISO="${REPO_ROOT}/slop.iso"
+ISO_PATH="${1:-${DEFAULT_ISO}}"
+
+if [ ! -f "${ISO_PATH}" ] && [ "${ISO_PATH}" = "${DEFAULT_ISO}" ]; then
+  BUILD_ISO="${REPO_ROOT}/builddir/slop.iso"
+  if [ -f "${BUILD_ISO}" ]; then
+    ISO_PATH="${BUILD_ISO}"
+  fi
+fi
 
 warn() {
   echo "$*" >&2
@@ -86,6 +94,7 @@ OVMF_VARS_RUNTIME="$(mktemp "${OVMF_DIR}/OVMF_VARS.runtime.XXXXXX.fd")"
 trap cleanup_vars_copy EXIT INT TERM
 cp "${OVMF_VARS_TEMPLATE}" "${OVMF_VARS_RUNTIME}"
 
+# Run the guest with serial output on stdio so Ctrl+C terminates QEMU cleanly.
 exec qemu-system-x86_64 \
   -machine q35,accel=tcg \
   -m 512M \
@@ -93,6 +102,7 @@ exec qemu-system-x86_64 \
   -drive if=pflash,format=raw,file="${OVMF_VARS_RUNTIME}" \
   -cdrom "${ISO_PATH}" \
   -boot order=d,menu=on \
-  -serial mon:stdio \
+  -serial stdio \
+  -monitor none \
   -display none \
   -vga none

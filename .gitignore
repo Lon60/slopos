@@ -1,3 +1,6 @@
 builddir/
 third_party/
 *.swp
+slop.iso
+iso/boot/kernel.elf
+iso/EFI/BOOT/BOOTX64.EFI
