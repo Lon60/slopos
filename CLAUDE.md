@@ -15,26 +15,29 @@ This is **SlopOS**, an x86_64 kernel project that boots via GRUB2 with UEFI/Mult
 
 ### Key Build Commands
 ```bash
-# Build with Meson (cross-compile setup)
+# Configure and build the freestanding kernel
 meson setup builddir --cross-file=metal.ini
 meson compile -C builddir
 
-# Create EFI bootloader (GRUB2)
-grub-mkstandalone \
-  -O x86_64-efi \
-  -o BOOTX64.EFI \
-  "iso/boot/grub/grub.cfg=grub.cfg"
-
-# Package ISO with UEFI El Torito entry
-scripts/build_iso.sh builddir/slop.iso
+# Package a UEFI-bootable ISO (produces builddir/slop.iso by default)
+scripts/build_iso.sh
 ```
+
+The ISO helper automatically:
+
+* copies `builddir/kernel.elf` into a temporary staging tree,
+* embeds `iso/boot/grub/grub.cfg` into a freshly generated `EFI/BOOT/BOOTX64.EFI` via `grub-mkstandalone`, and
+* emits a GPT/UEFI compatible image using `xorriso`.
+
+Missing prerequisites (e.g. `grub-efi-amd64-bin`, `xorriso`) are reported with install hints before any artifacts are touched.
 
 ### Testing
-Run kernel in QEMU with UEFI:
+Run the kernel under QEMU + OVMF once the ISO has been produced:
 ```bash
-qemu-system-x86_64 -serial stdio
-# Note: Cannot close QEMU windows - use log files and timeouts for testing
+scripts/run_qemu_ovmf.sh builddir/slop.iso
 ```
+* Pass `scripts/run_qemu_ovmf_video.sh builddir/slop.iso` for a graphical window (GTK by default).
+* Both launchers reuse `scripts/setup_ovmf.sh` to fetch firmware when it is not already cached under `third_party/ovmf/`.
 
 ## CRITICAL SAFETY GUIDELINES
 
@@ -97,8 +100,8 @@ This is a development kernel that must only be tested in virtualized environment
 ### File Structure
 - Empty directories contain `.gitkeep` files
 - Source code not yet implemented (directories prepared for development)
-- EFI bootloader already built: `EFI/BOOT/BOOTX64.EFI`
-- GRUB configuration: `iso/boot/grub/grub.cfg`
+- `iso/` now only hosts template configuration; `EFI/BOOT/BOOTX64.EFI` is generated on demand by `scripts/build_iso.sh`
+- GRUB configuration template: `iso/boot/grub/grub.cfg`
 
 ### Key Implementation Milestones
 1. Boot & 64-bit transition

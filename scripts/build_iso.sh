@@ -2,32 +2,66 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ISO_DIR="${REPO_ROOT}/iso"
-DEFAULT_OUTPUT="${REPO_ROOT}/slop.iso"
+ISO_TEMPLATE_DIR="${REPO_ROOT}/iso"
+BUILD_DIR="${REPO_ROOT}/builddir"
+DEFAULT_KERNEL="${BUILD_DIR}/kernel.elf"
+DEFAULT_OUTPUT="${BUILD_DIR}/slop.iso"
+
 OUTPUT_PATH="${1:-${DEFAULT_OUTPUT}}"
+KERNEL_PATH="${2:-${DEFAULT_KERNEL}}"
+GRUB_CFG_SOURCE="${ISO_TEMPLATE_DIR}/boot/grub/grub.cfg"
 
-if ! command -v xorriso >/dev/null 2>&1; then
-  echo "xorriso is required to build the UEFI ISO image." >&2
-  echo "Install xorriso (e.g. apt install xorriso) and retry." >&2
-  exit 1
-fi
+err() {
+  echo "[build_iso] $*" >&2
+}
 
-BOOTLOADER_PATH="${ISO_DIR}/EFI/BOOT/BOOTX64.EFI"
-if [ ! -f "${BOOTLOADER_PATH}" ]; then
-  echo "UEFI bootloader not found at ${BOOTLOADER_PATH}." >&2
-  echo "Ensure grub-mkstandalone has produced BOOTX64.EFI before building the ISO." >&2
-  exit 1
-fi
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    err "Missing required command '$1'. Install it (e.g. apt install $2) and retry."
+    exit 1
+  fi
+}
 
-KERNEL_PATH="${ISO_DIR}/boot/kernel.elf"
+require_cmd grub-mkstandalone grub-efi-amd64-bin
+require_cmd xorriso xorriso
+
 if [ ! -f "${KERNEL_PATH}" ]; then
-  echo "Kernel not found at ${KERNEL_PATH}." >&2
-  echo "Build the kernel (meson compile) before creating the ISO." >&2
+  err "Kernel not found at ${KERNEL_PATH}. Build the kernel first (meson compile -C builddir)."
   exit 1
 fi
+
+if [ ! -f "${GRUB_CFG_SOURCE}" ]; then
+  err "GRUB configuration not found at ${GRUB_CFG_SOURCE}."
+  exit 1
+fi
+
+STAGING_DIR="$(mktemp -d)"
+trap 'rm -rf "${STAGING_DIR}"' EXIT INT TERM
+
+BOOT_DIR="${STAGING_DIR}/boot"
+ESP_DIR="${STAGING_DIR}/EFI/BOOT"
+mkdir -p "${BOOT_DIR}/grub" "${ESP_DIR}"
+
+cp "${KERNEL_PATH}" "${BOOT_DIR}/kernel.elf"
+cp "${GRUB_CFG_SOURCE}" "${BOOT_DIR}/grub/grub.cfg"
+
+EMBED_CFG="$(mktemp)"
+trap 'rm -rf "${STAGING_DIR}" "${EMBED_CFG}"' EXIT INT TERM
+cat > "${EMBED_CFG}" <<'CFG'
+search --no-floppy --file --set=bootdev /boot/grub/grub.cfg
+set prefix=($bootdev)/boot/grub
+configfile ($bootdev)/boot/grub/grub.cfg
+CFG
+
+grub-mkstandalone \
+  -O x86_64-efi \
+  --locales= \
+  --fonts= \
+  -o "${ESP_DIR}/BOOTX64.EFI" \
+  "grub.cfg=${EMBED_CFG}" >/dev/null
 
 TMP_OUTPUT="${OUTPUT_PATH}.tmp"
-trap 'rm -f "${TMP_OUTPUT}"' EXIT INT TERM
+trap 'rm -rf "${STAGING_DIR}" "${EMBED_CFG}" "${TMP_OUTPUT}"' EXIT INT TERM
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
 
 xorriso -as mkisofs \
@@ -38,9 +72,10 @@ xorriso -as mkisofs \
   -e EFI/BOOT/BOOTX64.EFI \
   -no-emul-boot \
   -isohybrid-gpt-basdat \
-  "${ISO_DIR}" >/dev/null
+  "${STAGING_DIR}" >/dev/null
 
 mv "${TMP_OUTPUT}" "${OUTPUT_PATH}"
 trap - EXIT INT TERM
+rm -rf "${STAGING_DIR}" "${EMBED_CFG}"
 
 echo "Created UEFI bootable ISO at ${OUTPUT_PATH}" >&2

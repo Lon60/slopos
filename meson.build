@@ -70,7 +70,7 @@ inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers')
 # This will be used for boot assembly code that needs special handling
 
 # Main kernel executable
-kernel_elf = executable('kernel.elf',
+kernel_elf = executable('kernel',
   sources : all_sources,
   include_directories : inc_dirs,
   link_args : [
@@ -89,26 +89,3 @@ summary({
   'Linker Script': 'link.ld',
   'Output': 'kernel.elf'
 }, section: 'SlopOS Kernel Build')
-
-# Custom target to copy kernel.elf to iso/boot/ for GRUB
-kernel_iso_copy = custom_target('kernel_iso_copy',
-  input : kernel_elf,
-  output : 'kernel.elf.copied',
-  command : ['cp', '@INPUT@', meson.current_source_dir() / 'iso' / 'boot' / 'kernel.elf'],
-  build_by_default : true,
-  depends : kernel_elf
-)
-
-build_iso_script = meson.current_source_dir() / 'scripts' / 'build_iso.sh'
-
-slop_iso = custom_target('slop_iso',
-  input : [
-    kernel_iso_copy,
-    files('iso/EFI/BOOT/BOOTX64.EFI'),
-    files('iso/boot/grub/grub.cfg'),
-  ],
-  output : 'slop.iso',
-  command : [build_iso_script, '@OUTPUT@'],
-  build_by_default : true,
-  depends : kernel_iso_copy
-)

@@ -1,6 +1,10 @@
 builddir/
 third_party/
+EFI/
+boot_fat/
+test_efi_dir/
 *.swp
 slop.iso
+*.iso
 iso/boot/kernel.elf
 iso/EFI/BOOT/BOOTX64.EFI
