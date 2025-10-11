@@ -7,18 +7,14 @@ SECTIONS
   /* Start kernel at 1MB where GRUB loads it */
   . = 0x100000;
 
-  /* Multiboot2 header must come first in the file */
-  .mb2 ALIGN(8) : {
+  /* Multiboot2 header must come first - make it part of text section */
+  .text ALIGN(8) : {
     KEEP(*(.multiboot2_header))
+    *(.text .text.*)
   }
 
   /* Kernel start symbol */
   _kernel_start = .;
-
-  /* All code and data in low memory for now */
-  .text : {
-    *(.text .text.*)
-  }
 
   .rodata : {
     *(.rodata .rodata.*)

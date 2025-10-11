@@ -39,12 +39,17 @@ mm_sources += files(
   'mm/early_paging.c',
   'mm/uefi_memory.c',
   'mm/buddy_alloc.c',
-  'mm/vmem_regions.c'
+  'mm/vmem_regions.c',
+  'mm/memory_init.c'
 )
 
 # Video/framebuffer directory
 video_dir = meson.current_source_dir() / 'video'
-video_sources += files()  # Will be populated when source files exist
+video_sources += files(
+  'video/framebuffer.c',
+  'video/graphics.c',
+  'video/font.c'
+)
 
 # Drivers directory
 drivers_dir = meson.current_source_dir() / 'drivers'

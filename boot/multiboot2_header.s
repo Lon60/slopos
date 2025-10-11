@@ -13,12 +13,14 @@ multiboot2_header_start:
     .long -(0xe85250d6 + 0x00000000 + (multiboot2_header_end - multiboot2_header_start))  # Checksum
 
     # Information request tag - Request UEFI memory map
+    .align 8                        # Ensure 8-byte alignment
     .short 0x0001                   # Type: Information request
     .short 0                        # Flags: Required
     .long 12                        # Size of this tag
     .long 17                        # Request: EFI memory map
 
     # Framebuffer tag - Request specific framebuffer configuration
+    .align 8                        # Ensure 8-byte alignment
     .short 0x0005                   # Type: Framebuffer
     .short 0                        # Flags: Required
     .long 20                        # Size of this tag
@@ -27,6 +29,7 @@ multiboot2_header_start:
     .long 32                        # Preferred depth (bits per pixel)
 
     # End tag - Required to terminate the header
+    .align 8                        # Ensure 8-byte alignment
     .short 0x0000                   # Type: End tag
     .short 0                        # Flags: None
     .long 8                         # Size: Minimal size for end tag

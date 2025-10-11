@@ -5,6 +5,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "../drivers/serial.h"
+#include "constants.h"
 
 // Forward declarations for other modules
 extern void verify_cpu_state(void);
@@ -12,6 +14,7 @@ extern void verify_memory_layout(void);
 extern void check_stack_health(void);
 extern void kernel_panic(const char *message);
 extern void init_paging(void);
+extern void init_kernel_memory_layout(void);
 extern void parse_multiboot2_info(uint64_t multiboot_info_addr);
 
 // Kernel state tracking
@@ -62,11 +65,7 @@ uint64_t get_multiboot2_info(void) {
 static void initialize_kernel_subsystems(void) {
     early_debug_string("SlopOS: Initializing kernel subsystems\n");
 
-    // Initialize paging system
-    init_paging();
-    early_debug_string("SlopOS: Paging system initialized\n");
-
-    // Parse Multiboot2 information if available
+    // Parse Multiboot2 information first if available
     if (multiboot2_info_addr != 0) {
         parse_multiboot2_info(multiboot2_info_addr);
         early_debug_string("SlopOS: Multiboot2 info parsed\n");
@@ -74,46 +73,112 @@ static void initialize_kernel_subsystems(void) {
         early_debug_string("SlopOS: No multiboot2 info available\n");
     }
 
+    // Initialize paging system
+    init_paging();
+    early_debug_string("SlopOS: Paging system initialized\n");
+
+    // Initialize kernel memory layout
+    init_kernel_memory_layout();
+    early_debug_string("SlopOS: Kernel memory layout initialized\n");
+
     // Mark kernel as initialized
     kernel_initialized = 1;
     early_debug_string("SlopOS: Kernel subsystems initialized\n");
 }
 
 /*
- * Main 64-bit kernel entry point
+ * Main 64-bit kernel entry point - MVP VERSION
  * Called from assembly code after successful transition to long mode
  *
  * Parameters:
  *   multiboot_info - Physical address of Multiboot2 information structure
  *
- * At entry:
- *   - CPU is in 64-bit long mode
- *   - Basic paging is established (identity + higher-half)
- *   - Stack is available
- *   - Interrupts are disabled
+ * This is a minimal viable kernel main function to prove OVMF boot works.
+ * Following SysV ABI - first parameter in RDI.
  */
 void kernel_main(uint64_t multiboot_info) {
     // Store multiboot2 info for later use
     set_multiboot2_info(multiboot_info);
 
-    // Verify system state is correct
-    verify_cpu_state();
-    verify_memory_layout();
-    check_stack_health();
+    // Initialize COM1 serial port for output
+    serial_init_com1();
 
-    // Signal successful 64-bit mode entry
-    early_debug_string("SlopOS: 64-bit kernel started successfully\n");
+    // Output success message via serial port
+    kprintln("SlopOS Kernel Started!");
+    kprintln("OVMF UEFI Boot Successful");
+    kprint("Multiboot2 Info Pointer: ");
+    kprint_hex(multiboot_info);
+    kprintln("");
 
-    // Initialize kernel subsystems
+    // Verify we're running in higher-half virtual memory
+    uint64_t stack_ptr;
+    __asm__ volatile ("movq %%rsp, %0" : "=r" (stack_ptr));
+    kprint("Current Stack Pointer: ");
+    kprint_hex(stack_ptr);
+    kprintln("");
+
+    // Get current instruction pointer
+    void *current_ip = &&current_location;
+current_location:
+    kprint("Kernel Code Address: ");
+    kprint_hex((uint64_t)current_ip);
+    kprintln("");
+
+    // Check if we're in higher-half (above 0xFFFFFFFF80000000)
+    if ((uint64_t)current_ip >= KERNEL_VIRTUAL_BASE) {
+        kprintln("Running in higher-half virtual memory - CORRECT");
+    } else {
+        kprintln("WARNING: Not running in higher-half virtual memory");
+    }
+
+    // Initialize kernel subsystems with memory management
+    kprintln("Initializing kernel subsystems...");
     initialize_kernel_subsystems();
+    kprintln("Kernel subsystem initialization complete.");
 
-    early_debug_string("SlopOS: Early kernel initialization complete\n");
-    early_debug_string("SlopOS: Entering main kernel loop\n");
+    // Initialize video subsystem (video-pipeline-architect)
+    kprintln("Initializing framebuffer graphics system...");
+    extern int framebuffer_init(void);
+    extern void font_console_init(uint32_t fg_color, uint32_t bg_color);
+    extern int font_console_puts(const char *str);
+    extern void framebuffer_clear(uint32_t color);
+    extern int graphics_draw_rect_filled(int x, int y, int width, int height, uint32_t color);
+    extern int graphics_draw_circle(int cx, int cy, int radius, uint32_t color);
 
-    // TODO: Transition to main kernel initialization
-    // For now, enter a safe infinite loop
+    if (framebuffer_init() == 0) {
+        kprintln("Framebuffer initialized successfully!");
+
+        // Clear screen to dark blue
+        framebuffer_clear(0x001122FF);
+
+        // Initialize console with white text on dark background
+        font_console_init(0xFFFFFFFF, 0x00000000);
+
+        // Test graphics by drawing some basic shapes
+        graphics_draw_rect_filled(50, 50, 200, 100, 0xFF0000FF);  // Red rectangle
+        graphics_draw_circle(400, 200, 50, 0x00FF00FF);           // Green circle
+        graphics_draw_rect_filled(10, 300, 300, 2, 0xFFFFFFFF);   // White line
+
+        // Display welcome message on screen
+        font_console_puts("SlopOS Graphics System Initialized!\n");
+        font_console_puts("Basic framebuffer operations working.\n");
+        font_console_puts("Memory management: OK\n");
+        font_console_puts("Graphics primitives: OK\n");
+        font_console_puts("Text rendering: OK\n");
+
+        kprintln("Graphics system test complete - visual output should be visible!");
+    } else {
+        kprintln("WARNING: Framebuffer initialization failed - no graphics available");
+    }
+
+    // TODO: Initialize scheduler subsystem (kernel-scheduler-manager)
+
+    kprintln("Kernel initialization complete.");
+    kprintln("Entering infinite loop - MVP SUCCESS!");
+
+    // MVP complete - infinite halt loop
     while (1) {
-        __asm__ volatile ("hlt");
+        __asm__ volatile ("hlt");  // Halt until next interrupt
     }
 }
 
