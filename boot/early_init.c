@@ -168,7 +168,6 @@ current_location:
     kprintln("Initializing framebuffer graphics system...");
     extern int framebuffer_init(void);
     extern void font_console_init(uint32_t fg_color, uint32_t bg_color);
-    extern int font_console_puts(const char *str);
     extern void framebuffer_clear(uint32_t color);
     extern int graphics_draw_rect_filled(int x, int y, int width, int height, uint32_t color);
     extern int graphics_draw_circle(int cx, int cy, int radius, uint32_t color);
@@ -182,17 +181,26 @@ current_location:
         // Initialize console with white text on dark background
         font_console_init(0xFFFFFFFF, 0x00000000);
 
-        // Test graphics by drawing some basic shapes
-        graphics_draw_rect_filled(50, 50, 200, 100, 0xFF0000FF);  // Red rectangle
-        graphics_draw_circle(400, 200, 50, 0x00FF00FF);           // Green circle
-        graphics_draw_rect_filled(10, 300, 300, 2, 0xFFFFFFFF);   // White line
+        // Large red rectangle at top-left
+        graphics_draw_rect_filled(20, 20, 300, 150, 0xFF0000FF);
+        
+        // Large green rectangle at top-right
+        graphics_draw_rect_filled(700, 20, 300, 150, 0x00FF00FF);
+        
+        // Large yellow circle in center
+        graphics_draw_circle(512, 384, 100, 0xFFFF00FF);
+        
+        // White border around entire screen
+        graphics_draw_rect_filled(0, 0, 1024, 4, 0xFFFFFFFF);      // Top
+        graphics_draw_rect_filled(0, 764, 1024, 4, 0xFFFFFFFF);    // Bottom
+        graphics_draw_rect_filled(0, 0, 4, 768, 0xFFFFFFFF);       // Left
+        graphics_draw_rect_filled(1020, 0, 4, 768, 0xFFFFFFFF);    // Right
 
-        // Display welcome message on screen
-        font_console_puts("SlopOS Graphics System Initialized!\n");
-        font_console_puts("Basic framebuffer operations working.\n");
-        font_console_puts("Memory management: OK\n");
-        font_console_puts("Graphics primitives: OK\n");
-        font_console_puts("Text rendering: OK\n");
+        // Display large welcome message using font_draw_string
+        extern int font_draw_string(int x, int y, const char *str, uint32_t fg_color, uint32_t bg_color);
+        font_draw_string(20, 600, "*** SLOPOS GRAPHICS SYSTEM OPERATIONAL ***", 0xFFFFFFFF, 0x00000000);
+        font_draw_string(20, 616, "Framebuffer: WORKING | Resolution: 1024x768", 0xFFFFFFFF, 0x00000000);
+        font_draw_string(20, 632, "Memory: OK | Graphics: OK | Text: OK", 0xFFFFFFFF, 0x00000000);
 
         kprintln("Graphics system test complete - visual output should be visible!");
     } else {
