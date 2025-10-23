@@ -391,3 +391,17 @@ void pic_enable_safe_irqs(void) {
 
     kprintln("Safe IRQs enabled: Timer (IRQ 0), Keyboard (IRQ 1)");
 }
+
+/*
+ * Wrapper function matching header declaration
+ */
+void pic_init(void) {
+    init_pic();
+}
+
+/*
+ * Wrapper function matching header declaration
+ */
+void pic_dump_state(void) {
+    pic_dump_status();
+}

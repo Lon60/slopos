@@ -20,23 +20,23 @@ static exception_handler_t exception_handlers[32] = {0};
 void idt_init(void) {
     kprintln("IDT: Initializing Interrupt Descriptor Table");
 
-    // Clear the IDT
-    for (int i = 0; i < IDT_ENTRIES; i++) {
-        idt[i].offset_low = 0;
-        idt[i].selector = 0;
-        idt[i].ist = 0;
-        idt[i].type_attr = 0;
-        idt[i].offset_mid = 0;
-        idt[i].offset_high = 0;
-        idt[i].zero = 0;
+    // Clear the IDT using byte-level access
+    // NOTE: Direct struct member access in loops caused page faults due to
+    // compiler optimization or alignment issues. Byte-level clearing works reliably.
+    volatile uint8_t *idt_bytes = (volatile uint8_t *)&idt;
+    for (int i = 0; i < sizeof(idt); i++) {
+        idt_bytes[i] = 0;
     }
 
     // Set up the IDT pointer
     idt_pointer.limit = (sizeof(struct idt_entry) * IDT_ENTRIES) - 1;
     idt_pointer.base = (uint64_t)&idt;
 
+    kprintln("IDT: Set up IDT pointer");
+
     // Install exception handlers
     // Exceptions 0-19 are defined by Intel
+    kprintln("IDT: Installing exception handlers...");
     idt_set_gate(0, (uint64_t)isr0, 0x08, IDT_GATE_INTERRUPT);   // Divide Error
     idt_set_gate(1, (uint64_t)isr1, 0x08, IDT_GATE_INTERRUPT);   // Debug
     idt_set_gate(2, (uint64_t)isr2, 0x08, IDT_GATE_INTERRUPT);   // NMI
@@ -88,7 +88,7 @@ void idt_set_gate(uint8_t vector, uint64_t handler, uint16_t selector, uint8_t t
     idt[vector].offset_low = handler & 0xFFFF;
     idt[vector].selector = selector;
     idt[vector].ist = 0;  // No separate interrupt stacks for now
-    idt[vector].type_attr = type | 0x60;  // DPL=3 for user access, Present=1
+    idt[vector].type_attr = type | 0x80;  // Present=1 (bit 7), DPL=0 for kernel only
     idt[vector].offset_mid = (handler >> 16) & 0xFFFF;
     idt[vector].offset_high = (handler >> 32) & 0xFFFFFFFF;
     idt[vector].zero = 0;

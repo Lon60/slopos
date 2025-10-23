@@ -9,7 +9,7 @@ It’s structured with **milestones, technical anchors, and guiding keywords** s
 
 Develop an **x86_64 kernel** that:
 
-* Boots via **GRUB2 (UEFI, Multiboot2 header)**
+* Boots via **Limine bootloader (UEFI, Multiboot2 protocol)**
 * Transitions from **i386 assembly → 64-bit long mode**
 * Initializes **paging, higher half kernel**, and minimal device setup
 * Provides:
@@ -25,26 +25,32 @@ The framebuffer is shared by all processes; no separate console driver. No legac
 Language: **C or C++** (freestanding, no stdlib). Use **AT&T assembly** for boot code.
 Build system: **Meson + LLVM/Clang** cross setup.
 
+**Current Status**: ✅ Kernel boots successfully and reaches 64-bit mode!
+
 ---
 
 ## Roadmap / Milestones
 
-### 1. Boot & Entry
+### 1. Boot & Entry ✅ COMPLETE
 
 * Provide a **Multiboot2 header** (`.multiboot2_header` section).
-* GRUB loads the kernel ELF.
-* Step 1: **i386 assembly entry**
+* Limine bootloader loads the kernel ELF.
+* Step 1: **i386 assembly entry** (`boot/entry32.s`)
 
-  * Set up minimal stack.
-  * Prepare for long mode.
-  * Build a provisional **GDT** and **IDT** in 32-bit.
-* Step 2: **Transition to 64-bit long mode**
+  * Set up minimal stack at 0x20000.
+  * Verify CPU supports CPUID and long mode.
+  * Create page tables (PML4/PDPT/PD) for identity mapping and higher-half.
+  * Build 64-bit **GDT** and enable PAE + long mode.
+* Step 2: **Transition to 64-bit long mode** (`boot/entry64.s`)
 
-  * Load 64-bit GDT.
-  * Identity map low memory (1:1 physical → virtual).
-  * Jump to higher half entry point.
+  * Load 64-bit segments.
+  * Set up 64-bit stack.
+  * Preserve multiboot2 info pointer in RDI (SysV ABI).
+  * Currently outputs "KERN" via serial and halts.
 
-**Guiding keywords**: multiboot2 header, i386 asm, long mode, GDT, IDT, identity mappings, higher half.
+**Guiding keywords**: multiboot2 header, Limine, i386 asm, long mode, GDT, paging, identity mappings, higher half.
+
+**Next step**: Make `boot/entry64.s` call `kernel_main()` instead of halting.
 
 ---
 
@@ -81,7 +87,7 @@ Build system: **Meson + LLVM/Clang** cross setup.
 
 * Initialize a **framebuffer**:
 
-  * Use **UEFI GOP** info passed from GRUB.
+  * Use **UEFI GOP** info passed via multiboot2 from Limine.
   * Map framebuffer memory into kernel space.
 * Provide simple **software rendering**:
 
@@ -90,7 +96,7 @@ Build system: **Meson + LLVM/Clang** cross setup.
   * Basic primitives (rectangles, pixels).
 * Framebuffer is **shared memory**, accessible by all processes.
 
-**Guiding keywords**: framebuffer, GOP, software rendering, display output, shared buffer.
+**Guiding keywords**: framebuffer, GOP, multiboot2 tags, software rendering, display output, shared buffer.
 
 ---
 
@@ -124,40 +130,40 @@ Build system: **Meson + LLVM/Clang** cross setup.
 
 ## Testing
 
-  * Run under **QEMU** with **OVMF** firmware:
-    Remember you cannot close qemu nor qemu windows you have to use log files and timeouts
+Run under **QEMU** with **OVMF** firmware:
 
-    Install the emulator and firmware once on a fresh environment:
+### Quick Start
+```bash
+# Compile kernel
+meson compile -C builddir
 
-    ```
-    sudo apt-get install -y qemu-system-x86 ovmf
-    ```
+# Build bootable ISO with Limine
+scripts/build_iso.sh
 
-    Build the UEFI ISO (ensures `/EFI/BOOT/BOOTX64.EFI` is published via the El Torito catalog):
+# Test interactively (Ctrl+C to exit)
+scripts/run_qemu_ovmf.sh
 
-    ```
-    # After compiling the kernel (meson compile -C builddir)
-    scripts/build_iso.sh builddir/slop.iso
-    ```
+# OR test with timeout for AI agents (auto-exits after 15s)
+scripts/run_qemu_ovmf.sh builddir/slop.iso 15
 
-    Then boot the ISO headlessly:
+# Check logs (timeout mode only)
+cat test_output.log | grep "KERN"
+```
 
-    ```
-    scripts/run_qemu_ovmf.sh
-    ```
+### Prerequisites
+```bash
+sudo apt-get install -y qemu-system-x86 ovmf xorriso git
+```
 
-    The helper script now prefers the distro-provided firmware (via `scripts/setup_ovmf.sh`) and falls back to downloading when
-    needed. It launches QEMU without requiring a GUI, copying a fresh OVMF variables image each run so UEFI boots reliably from
-    the attached ISO. Pass a custom ISO path as an argument when needed. Before QEMU starts it inspects the ISO with `xorriso`
-    and aborts with guidance if the El Torito catalog does not advertise a UEFI boot image—this prevents the typical
-    `BdsDxe: failed to load Boot0001 ...` loop you see when `/EFI/BOOT/BOOTX64.EFI` is missing or baked in with BIOS-only
-    metadata.
-* Confirm:
+### Current Boot Status ✅
 
-  * Entry into long mode.
-  * Higher half mapping works.
-  * Framebuffer is cleared to a color.
-  * Kernel can allocate memory, start a few tasks, and render pixels.
+* ✅ Entry into long mode - **WORKING**
+* ✅ Higher half mapping - **WORKING**
+* ✅ Paging setup complete - **WORKING**
+* ✅ Serial output functional - **WORKING** (outputs "KERN")
+* ⏳ Framebuffer initialization - **TODO**
+* ⏳ Memory allocator - **TODO**
+* ⏳ Task switching - **TODO**
 
 ---
 

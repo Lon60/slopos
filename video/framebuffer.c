@@ -150,9 +150,7 @@ int framebuffer_init(void) {
         return -1;
     }
 
-    /* For now, use direct physical mapping in higher half */
-    /* TODO: Map through proper virtual memory management */
-    void *virtual_addr = (void*)(KERNEL_VIRTUAL_BASE + phys_addr);
+    void *virtual_addr = (void*)phys_addr;
 
     /* Initialize framebuffer info */
     fb_info.physical_addr = phys_addr;
