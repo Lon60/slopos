@@ -34,19 +34,19 @@ check_iso_bootability() {
     return 0
   fi
 
-  local boot_line
-  boot_line="$(awk '/El Torito boot img/{print}' <<<"${report}" | head -n1)"
-  if [ -z "${boot_line}" ]; then
-    warn "No El Torito boot image entry found in ${ISO_PATH}"
+  local boot_lines
+  boot_lines="$(awk '/El Torito boot img/{print}' <<<"${report}")"
+  if [ -z "${boot_lines}" ]; then
+    warn "No El Torito boot image entries found in ${ISO_PATH}"
     return 0
   fi
 
-  local platform
-  platform="$(awk '{print $7}' <<<"${boot_line}")"
+  local has_uefi
+  has_uefi="$(awk '{print $7}' <<<"${boot_lines}" | grep -c "UEFI" || true)"
 
-  if [ "${platform}" != "UEFI" ]; then
-    warn "Detected ${platform:-unknown} El Torito platform in ${ISO_PATH} – OVMF expects a UEFI entry"
-    warn "Rebuild the ISO with a UEFI boot catalog (e.g. grub-mkrescue or xorriso -eltorito-alt-boot)"
+  if [ "${has_uefi}" -eq 0 ]; then
+    warn "No UEFI El Torito entry found in ${ISO_PATH} – OVMF requires UEFI boot support"
+    warn "Rebuild the ISO with a UEFI boot catalog (e.g. xorriso -eltorito-alt-boot)"
     return 1
   fi
 
@@ -62,6 +62,9 @@ check_iso_bootability() {
   case "${boot_path}" in
     /EFI/BOOT/BOOTX64.EFI|/efiboot.img)
       echo "Verified UEFI boot catalog entry (${boot_path}) in ${ISO_PATH}"
+      ;;
+    /boot/limine-bios-cd.bin|/boot/limine-uefi-cd.bin)
+      echo "Verified Limine UEFI boot catalog entry (${boot_path}) in ${ISO_PATH}"
       ;;
     *)
       warn "Unexpected UEFI boot path ${boot_path} (expected /EFI/BOOT/BOOTX64.EFI or /efiboot.img)"
@@ -98,15 +101,57 @@ OVMF_VARS_RUNTIME="$(mktemp "${OVMF_DIR}/OVMF_VARS.runtime.XXXXXX.fd")"
 trap cleanup_vars_copy EXIT INT TERM
 cp "${OVMF_VARS_TEMPLATE}" "${OVMF_VARS_RUNTIME}"
 
-# Validate display backend (allow only gtk or sdl); default already set to gtk
-case "${DISPLAY_BACKEND}" in
-  gtk|sdl)
-    ;;
-  *)
-    warn "Unknown display backend '${DISPLAY_BACKEND}', falling back to 'gtk'"
-    DISPLAY_BACKEND=gtk
-    ;;
-esac
+# Detect available display backends
+detect_display_backend() {
+  local available_displays
+  available_displays="$(qemu-system-x86_64 -display help 2>&1 | grep -v "^Available" | grep -v "^Some" | grep -v "^For" | grep -v "^$" | awk '{print $1}' | grep -vw "none")"
+  
+  # If no displays available at all
+  if [ -z "${available_displays}" ]; then
+    return 1
+  fi
+  
+  # Try user's preference first (but not 'none')
+  if [ "${DISPLAY_BACKEND}" != "none" ] && echo "${available_displays}" | grep -qw "${DISPLAY_BACKEND}"; then
+    echo "${DISPLAY_BACKEND}"
+    return 0
+  fi
+  
+  # Fall back to common displays in order of preference
+  for display in gtk sdl cocoa vnc curses; do
+    if echo "${available_displays}" | grep -qw "${display}"; then
+      warn "Display backend '${DISPLAY_BACKEND}' not available, using '${display}'"
+      echo "${display}"
+      return 0
+    fi
+  done
+  
+  # No graphical display available
+  return 1
+}
+
+DETECTED_DISPLAY="$(detect_display_backend || echo "none")"
+
+if [ "${DETECTED_DISPLAY}" = "none" ]; then
+  echo "ERROR: No graphical display backends available in QEMU." >&2
+  echo "Your QEMU installation was compiled without display support." >&2
+  echo "" >&2
+  echo "To fix this, install QEMU with graphical support:" >&2
+  echo "  • Arch/CachyOS: pacman -S qemu-ui-gtk qemu-ui-sdl" >&2
+  echo "  • Ubuntu/Debian: apt install qemu-system-gui" >&2
+  echo "  • Fedora: dnf install qemu-ui-gtk qemu-ui-sdl" >&2
+  echo "" >&2
+  echo "Alternatively, use VNC by installing qemu-ui-vnc and connecting with a VNC viewer." >&2
+  exit 1
+fi
+
+# Special handling for VNC
+DISPLAY_ARGS="-display ${DETECTED_DISPLAY}"
+if [ "${DETECTED_DISPLAY}" = "vnc" ]; then
+  DISPLAY_ARGS="-vnc :0"
+  echo "Starting QEMU with VNC server on localhost:5900"
+  echo "Connect with: vncviewer localhost:5900"
+fi
 
 # Run the guest with a graphical display. Keep serial on stdio so kernel output still appears.
 # Let QEMU wire the ISO through its default AHCI controller to match OVMF's
@@ -122,5 +167,5 @@ exec qemu-system-x86_64 \
   -boot order=d,menu=on \
   -serial stdio \
   -monitor none \
-  -display ${DISPLAY_BACKEND} \
+  ${DISPLAY_ARGS} \
   -vga std
