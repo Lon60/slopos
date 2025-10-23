@@ -4,10 +4,10 @@ ENTRY(_start)
 
 SECTIONS
 {
-  /* Start kernel at 1MB where GRUB loads it */
+  /* Start kernel at 1MB where bootloader loads it - keep it simple for now */
   . = 0x100000;
 
-  /* Multiboot2 header must come first - make it part of text section */
+  /* Multiboot2 header must come first */
   .text ALIGN(8) : {
     KEEP(*(.multiboot2_header))
     *(.text .text.*)

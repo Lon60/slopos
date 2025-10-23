@@ -202,16 +202,29 @@ static void parse_efi64(struct multiboot_tag_efi64 *tag) {
  * Parse Multiboot2 information structure
  */
 void parse_multiboot2_info(uint64_t multiboot_info_addr) {
+    extern void kprint(const char *str);
+    extern void kprint_hex(uint64_t value);
+    
+    kprint("MB2: parse_multiboot2_info() called with addr ");
+    kprint_hex(multiboot_info_addr);
+    kprint("\n");
+    
     // Verify magic number and basic structure
     if (multiboot_info_addr == 0) {
+        kprint("MB2: ERROR - address is zero\n");
         return; // No multiboot info
     }
 
     uint32_t *info = (uint32_t*)multiboot_info_addr;
     uint32_t total_size = info[0];
     uint32_t reserved = info[1];
+    
+    kprint("MB2: total_size = ");
+    kprint_hex(total_size);
+    kprint("\n");
 
     if (total_size < 8) {
+        kprint("MB2: ERROR - total_size too small\n");
         return; // Invalid structure
     }
 
@@ -219,6 +232,12 @@ void parse_multiboot2_info(uint64_t multiboot_info_addr) {
     struct multiboot_tag *tag = (struct multiboot_tag*)(info + 2);
     uint64_t addr = (uint64_t)tag;
     uint64_t end_addr = multiboot_info_addr + total_size;
+    
+    kprint("MB2: Parsing tags from ");
+    kprint_hex(addr);
+    kprint(" to ");
+    kprint_hex(end_addr);
+    kprint("\n");
 
     while (addr < end_addr) {
         tag = (struct multiboot_tag*)addr;
@@ -226,6 +245,15 @@ void parse_multiboot2_info(uint64_t multiboot_info_addr) {
         if (tag->type == MULTIBOOT_TAG_TYPE_END) {
             break;
         }
+
+        // Debug: Log all tags we encounter
+        extern void kprint(const char *str);
+        extern void kprint_hex(uint64_t value);
+        kprint("MB2: Found tag type ");
+        kprint_hex(tag->type);
+        kprint(" size ");
+        kprint_hex(tag->size);
+        kprint("\n");
 
         switch (tag->type) {
             case MULTIBOOT_TAG_TYPE_BASIC_MEMINFO:
@@ -237,6 +265,7 @@ void parse_multiboot2_info(uint64_t multiboot_info_addr) {
                 break;
 
             case MULTIBOOT_TAG_TYPE_FRAMEBUFFER:
+                kprint("MB2: Parsing framebuffer tag\n");
                 parse_framebuffer((struct multiboot_tag_framebuffer_common*)tag);
                 break;
 

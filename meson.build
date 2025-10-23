@@ -17,6 +17,14 @@ add_project_arguments([
     '-mno-red-zone',
     '-mcmodel=kernel',
     '-mabi=sysv',
+    # Disable SIMD/vector instructions to avoid "Invalid Opcode" exceptions
+    # These instructions may not be supported by QEMU or cause issues with large structures
+    '-mno-sse',
+    '-mno-sse2',
+    '-mno-mmx',
+    '-mno-avx',
+    '-mno-avx2',
+    '-msoft-float',
     '-Wall',
     '-Wextra',
     '-Wno-unused-parameter'
@@ -77,7 +85,9 @@ drivers_sources += files(
   'drivers/serial.c',
   'drivers/pic.c',
   'drivers/apic.c',
-  'drivers/interrupt_test.c'
+  'drivers/interrupt_test.c',
+  'drivers/exceptions.s',
+  'drivers/exception_handlers.c'
 )
 
 # Scheduler directory

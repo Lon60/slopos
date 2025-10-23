@@ -612,3 +612,60 @@ struct memory_region *debug_find_memory_region(uint64_t address) {
     }
     return NULL;
 }
+
+/*
+ * Analyze general protection fault
+ */
+void debug_analyze_general_protection(struct interrupt_frame *frame) {
+    kprintln("=== GENERAL PROTECTION FAULT (#GP) ===");
+    kprint("Error Code: ");
+    kprint_hex(frame->error_code);
+    kprintln("");
+    
+    // Decode error code
+    if (frame->error_code & 0x01) {
+        kprintln("External event caused exception");
+    }
+    
+    uint16_t selector_index = (frame->error_code >> 3) & 0x1FFF;
+    uint8_t table = (frame->error_code >> 1) & 0x03;
+    
+    kprint("Selector Index: ");
+    kprint_hex(selector_index);
+    kprint(" Table: ");
+    if (table == 0) kprintln("GDT");
+    else if (table == 1) kprintln("IDT");
+    else if (table == 2) kprintln("LDT");
+    else kprintln("Unknown");
+    
+    kprint("RIP: ");
+    kprint_hex(frame->rip);
+    kprintln("");
+}
+
+/*
+ * Analyze double fault
+ */
+void debug_analyze_double_fault(struct interrupt_frame *frame) {
+    kprintln("=== DOUBLE FAULT (#DF) ===");
+    kprintln("CRITICAL: A double fault indicates a severe kernel error");
+    kprintln("This usually means an exception occurred while handling another exception");
+    
+    kprint("Error Code: ");
+    kprint_hex(frame->error_code);
+    kprintln(" (always 0 for double fault)");
+    
+    kprint("RIP: ");
+    kprint_hex(frame->rip);
+    kprintln("");
+    
+    kprint("RSP: ");
+    kprint_hex(frame->rsp);
+    kprintln("");
+    
+    kprint("CS: ");
+    kprint_hex(frame->cs);
+    kprintln("");
+    
+    kprintln("System is likely in an unstable state");
+}

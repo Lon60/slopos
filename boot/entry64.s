@@ -70,35 +70,19 @@ entry_64bit:
     # No conversion needed - EDI was preserved through transition
     # This ensures proper 64-bit function call convention
 
-    # EMERGENCY TEST: Skip C code entirely and just output success
-    # Use COM1 serial port to output a simple message
+    # Set up proper stack frame for C code
+    pushq %rbp                      # Save old base pointer (0 for boot)
+    movq %rsp, %rbp                 # Set new base pointer
 
-    # Output 'K' to COM1 to indicate kernel reached 64-bit mode
-    movl $0x3F8, %edx               # COM1 base address
-    movb $'K', %al                  # Character 'K'
-    outb %al, %dx                   # Output to COM1
+    # Call kernel_main with multiboot2 info in RDI (SysV ABI)
+    # RDI already contains the multiboot2 info pointer from 32-bit mode
+    call kernel_main
 
-    # Output 'E' for kernel entry
-    movb $'E', %al
-    outb %al, %dx
-
-    # Output 'R' for reached
-    movb $'R', %al
-    outb %al, %dx
-
-    # Output 'N' for nucleus (kernel)
-    movb $'N', %al
-    outb %al, %dx
-
-    # Output newline
-    movb $'\n', %al
-    outb %al, %dx
-
-    # Success! Halt with interrupts disabled
+    # If kernel_main returns (it shouldn't), halt safely
     cli
-test_halt_loop:
+kernel_return_halt:
     hlt
-    jmp test_halt_loop
+    jmp kernel_return_halt
 
 # Get current instruction pointer for address verification
 get_current_rip:
