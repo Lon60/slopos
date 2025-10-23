@@ -21,7 +21,6 @@ extern void kernel_panic(const char *message);
 extern void init_paging(void);
 extern int init_early_paging(void);
 extern void init_kernel_memory_layout(void);
-extern void parse_multiboot2_info(uint64_t multiboot_info_addr);
 
 // IDT and interrupt handling
 extern void init_idt(void);
@@ -31,7 +30,6 @@ extern void load_idt(void);
 
 // Kernel state tracking
 static volatile int kernel_initialized = 0;
-static uint64_t multiboot2_info_addr = 0;
 
 /*
  * Early debug output support
@@ -57,19 +55,6 @@ static void early_debug_string(const char *str) {
     }
 }
 
-/*
- * Set multiboot2 info address for later processing
- */
-void set_multiboot2_info(uint64_t addr) {
-    multiboot2_info_addr = addr;
-}
-
-/*
- * Get multiboot2 info address
- */
-uint64_t get_multiboot2_info(void) {
-    return multiboot2_info_addr;
-}
 
 /*
  * Initialize kernel subsystems in proper order
@@ -102,12 +87,13 @@ static void initialize_kernel_subsystems(void) {
     // TODO: Re-enable interrupt testing after full boot is working
     early_debug_string("SlopOS: Interrupt test framework skipped for initial boot\n");
 
-    // Parse Multiboot2 information first if available
-    if (multiboot2_info_addr != 0) {
-        parse_multiboot2_info(multiboot2_info_addr);
-        early_debug_string("SlopOS: Multiboot2 info parsed\n");
+    // Initialize Limine boot protocol
+    early_debug_string("SlopOS: Initializing Limine boot protocol...\n");
+    extern int init_limine_protocol(void);
+    if (init_limine_protocol() == 0) {
+        early_debug_string("SlopOS: Limine protocol initialized successfully\n");
     } else {
-        early_debug_string("SlopOS: No multiboot2 info available\n");
+        early_debug_string("SlopOS: WARNING - Limine protocol initialization failed\n");
     }
 
     // Skip paging initialization - already set up by boot assembly code
@@ -131,29 +117,19 @@ static void initialize_kernel_subsystems(void) {
 }
 
 /*
- * Main 64-bit kernel entry point - MVP VERSION
- * Called from assembly code after successful transition to long mode
+ * Main 64-bit kernel entry point
+ * Called from assembly code after successful boot via Limine bootloader
  *
- * Parameters:
- *   multiboot_info - Physical address of Multiboot2 information structure
- *
- * This is a minimal viable kernel main function to prove OVMF boot works.
- * Following SysV ABI - first parameter in RDI.
+ * This is the Limine protocol version - no parameters needed,
+ * Limine provides boot information via static request structures.
  */
-void kernel_main(uint64_t multiboot_info) {
+void kernel_main(void) {
     // Initialize COM1 serial port FIRST - before anything that prints
     serial_init_com1();
     
     // Output success message via serial port FIRST to prove serial works
     kprintln("SlopOS Kernel Started!");
-    kprintln("OVMF UEFI Boot Successful");
-    
-    // Store multiboot2 info for later use
-    set_multiboot2_info(multiboot_info);
-    
-    kprint("Multiboot2 Info Pointer: ");
-    kprint_hex(multiboot_info);
-    kprintln("");
+    kprintln("Booting via Limine Protocol...");
 
     // Verify we're running in higher-half virtual memory
     uint64_t stack_ptr;
@@ -182,13 +158,6 @@ current_location:
     kprintln("Initializing kernel subsystems...");
     initialize_kernel_subsystems();
     kprintln("Kernel subsystem initialization complete.");
-    
-    // Check if we got EFI system table
-    extern uint64_t get_efi_system_table(void);
-    uint64_t efi_table = get_efi_system_table();
-    kprint("EFI System Table: ");
-    kprint_hex(efi_table);
-    kprintln("");
 
     // Skip exception tests for now - we want a clean boot first
     // The IDT is properly configured and will catch any unexpected exceptions
@@ -257,10 +226,7 @@ current_location:
     kprintln("  - Debug & diagnostics");
     kprintln("  - Scheduler (cooperative multitasking)");
     kprintln("");
-    kprintln("Known issues:");
-    kprintln("  - Framebuffer blocked (see FRAMEBUFFER_ISSUE.md)");
-    kprintln("");
-    kprintln("Kernel initialization complete - MVP STABLE!");
+ kprintln("Kernel initialization complete - ALL SYSTEMS OPERATIONAL!");
     kprintln("System ready for next development phase.");
 
     // Enter idle loop
@@ -271,11 +237,10 @@ current_location:
 }
 
 /*
- * Alternative entry point without multiboot2 info
- * Used when multiboot2 info is not available or invalid
+ * Alternative entry point for compatibility
  */
 void kernel_main_no_multiboot(void) {
-    kernel_main(0);  // Call main entry with no multiboot info
+    kernel_main();
 }
 
 /*

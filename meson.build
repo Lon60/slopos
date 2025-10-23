@@ -42,22 +42,19 @@ kernel_sources = []
 # Boot directory - assembly and early C code
 boot_dir = meson.current_source_dir() / 'boot'
 boot_sources += files(
-  'boot/multiboot2_header.s',
-  'boot/entry32.s',
-  'boot/gdt_setup.s',
-  'boot/entry64.s',
+  'boot/limine_entry.s',
   'boot/idt_handlers.s',
   'boot/early_init.c',
   'boot/cpu_verify.c',
   'boot/kernel_panic.c',
   'boot/idt.c',
-  'boot/debug.c'
+  'boot/debug.c',
+  'boot/limine_protocol.c'
 )
 
 # Memory management directory
 mm_dir = meson.current_source_dir() / 'mm'
 mm_sources += files(
-  'mm/multiboot2.c',
   'mm/paging.c',
   'mm/memory_layout.c',
   'mm/mb2_parser.c',
@@ -119,16 +116,17 @@ kernel_elf = executable('kernel',
   include_directories : inc_dirs,
   c_args : [
     '-O2',
-    '-fno-builtin'
+    '-fno-builtin',
+    '-mcmodel=kernel',
+    '-fno-PIE'
   ],
   link_args : [
     '-nostdlib',
     '-static',
     '-Wl,-T,' + linker_script,
     '-Wl,-z,max-page-size=0x1000',
+    '-Wl,-z,common-page-size=0x1000',
     '-Wl,--build-id=none',
-    '-Wl,--gc-sections',
-    '-Wl,-n',
     '-lgcc'
   ],
   link_depends : files('link.ld'),
@@ -139,7 +137,7 @@ kernel_elf = executable('kernel',
 # Build summary
 summary({
   'Target': 'x86_64-unknown-none',
-  'Boot Protocol': 'Multiboot2',
+  'Boot Protocol': 'Limine Native',
   'Kernel Type': 'Freestanding Higher-Half',
   'Linker Script': 'link.ld',
   'Output': 'kernel.elf'
