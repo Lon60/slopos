@@ -100,26 +100,15 @@ long_mode_not_supported:
     movl $0x32, %eax                # Error code: No long mode
     jmp boot_error_halt
 
-# EMERGENCY APPROACH: Skip paging setup entirely for now
-# Let GRUB handle the paging until we reach C code
+# Set up complete paging for kernel boot
+# This creates identity mapping + higher-half kernel mapping
 setup_runtime_paging:
-    # For now, just enable long mode without changing page tables
-    # This lets us reach C code where we can debug the issue
-
-    # Enable Physical Address Extension (PAE) in CR4
-    movl %cr4, %eax
-    orl $0x20, %eax                 # Set PAE bit (bit 5)
-    movl %eax, %cr4
-
-    # Enable long mode in EFER MSR
-    movl $0xC0000080, %ecx          # EFER MSR number
-    rdmsr                           # Read current EFER value
-    orl $0x100, %eax                # Set LME bit (bit 8)
-    wrmsr                           # Write back to EFER
-
-    # Keep GRUB's existing CR3 and paging settings
-    # This should allow us to reach C code
-
+    # First, set up the page table structures
+    call setup_early_page_tables
+    
+    # Then enable long mode and paging
+    call enable_long_mode_paging
+    
     ret
 
 # Set up basic page table structures for early boot

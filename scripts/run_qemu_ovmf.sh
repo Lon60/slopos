@@ -1,12 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Show help if requested
+if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+  cat << 'EOF'
+Usage: run_qemu_ovmf.sh [ISO_PATH] [TIMEOUT]
+
+Runs SlopOS kernel ISO in QEMU with OVMF UEFI firmware.
+
+Arguments:
+  ISO_PATH    Path to ISO file (default: builddir/slop.iso)
+  TIMEOUT     Timeout in seconds (default: 0 = no timeout, interactive mode)
+              Use 0 for interactive testing (Ctrl+C to exit)
+              Use 10-15 for AI agent mode (auto-exits, logs to test_output.log)
+
+Examples:
+  # Interactive mode (default) - for human testing
+  run_qemu_ovmf.sh
+
+  # With explicit ISO path
+  run_qemu_ovmf.sh builddir/slop.iso
+
+  # AI agent mode - auto-exits after 15 seconds
+  run_qemu_ovmf.sh builddir/slop.iso 15
+
+  # Explicit interactive mode
+  run_qemu_ovmf.sh builddir/slop.iso 0
+EOF
+  exit 0
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OVMF_DIR="${REPO_ROOT}/third_party/ovmf"
 OVMF_CODE="${OVMF_DIR}/OVMF_CODE.fd"
 OVMF_VARS_TEMPLATE="${OVMF_DIR}/OVMF_VARS.fd"
-DEFAULT_ISO="${REPO_ROOT}/slop.iso"
+DEFAULT_ISO="${REPO_ROOT}/builddir/slop.iso"
 ISO_PATH="${1:-${DEFAULT_ISO}}"
+# Timeout in seconds (0 = no timeout, run indefinitely for interactive use)
+# Default is 0 (interactive). Pass a number for AI agent mode.
+TIMEOUT="${2:-0}"
+LOG_FILE="${REPO_ROOT}/test_output.log"
 
 if [ ! -f "${ISO_PATH}" ] && [ "${ISO_PATH}" = "${DEFAULT_ISO}" ]; then
   BUILD_ISO="${REPO_ROOT}/builddir/slop.iso"
@@ -31,41 +64,26 @@ check_iso_bootability() {
     return 0
   fi
 
-  local boot_line
-  boot_line="$(awk '/El Torito boot img/{print}' <<<"${report}" | head -n1)"
-  if [ -z "${boot_line}" ]; then
-    warn "No El Torito boot image entry found in ${ISO_PATH}"
+  local boot_lines
+  boot_lines="$(awk '/El Torito boot img/{print}' <<<"${report}")"
+  if [ -z "${boot_lines}" ]; then
+    warn "No El Torito boot image entries found in ${ISO_PATH}"
     return 0
   fi
 
+  # Check if ANY entry is UEFI (not just the first one)
   # Example line:
   # El Torito boot img :   1  BIOS  y   none  0x0000  0x00      4          37
-  local platform
-  platform="$(awk '{print $7}' <<<"${boot_line}")"
+  # El Torito boot img :   2  UEFI  y   none  0x0000  0x00   2880          46
+  local has_uefi
+  has_uefi="$(awk '{print $7}' <<<"${boot_lines}" | grep -c "UEFI" || true)"
 
-  if [ "${platform}" != "UEFI" ]; then
-    warn "Detected ${platform:-unknown} El Torito platform in ${ISO_PATH} – OVMF expects a UEFI entry"
-    warn "Rebuild the ISO with a UEFI boot catalog (e.g. grub-mkrescue or xorriso -eltorito-alt-boot)"
+  if [ "${has_uefi}" -eq 0 ]; then
+    warn "No UEFI El Torito entry found in ${ISO_PATH} – OVMF requires UEFI boot support"
+    warn "Rebuild the ISO with a UEFI boot catalog (e.g. xorriso -eltorito-alt-boot)"
     return 1
   fi
 
-  local path_line boot_path
-  path_line="$(awk '/El Torito img path/{print}' <<<"${report}" | head -n1)"
-  boot_path="$(awk '{print $7}' <<<"${path_line}")"
-
-  if [ -z "${boot_path}" ]; then
-    warn "El Torito boot path could not be determined for ${ISO_PATH}"
-    return 0
-  fi
-
-  case "${boot_path}" in
-    /EFI/BOOT/BOOTX64.EFI|/efiboot.img)
-      echo "Verified UEFI boot catalog entry (${boot_path}) in ${ISO_PATH}"
-      ;;
-    *)
-      warn "Unexpected UEFI boot path ${boot_path} (expected /EFI/BOOT/BOOTX64.EFI or /efiboot.img)"
-      ;;
-  esac
   return 0
 }
 
@@ -97,19 +115,48 @@ OVMF_VARS_RUNTIME="$(mktemp "${OVMF_DIR}/OVMF_VARS.runtime.XXXXXX.fd")"
 trap cleanup_vars_copy EXIT INT TERM
 cp "${OVMF_VARS_TEMPLATE}" "${OVMF_VARS_RUNTIME}"
 
-# Run the guest with serial output on stdio so Ctrl+C terminates QEMU cleanly.
+# Run the guest with serial output redirected to log file and console.
 # Let QEMU wire the ISO through its default AHCI controller to match OVMF's
 # built-in Boot0002 DVD entry.
-exec qemu-system-x86_64 \
-  -machine q35,accel=tcg \
-  -m 512M \
-  -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
-  -drive if=pflash,format=raw,file="${OVMF_VARS_RUNTIME}" \
-  -device ich9-ahci,id=ahci0,bus=pcie.0,addr=0x3 \
-  -drive if=none,id=cdrom,media=cdrom,readonly=on,file="${ISO_PATH}" \
-  -device ide-cd,bus=ahci0.0,drive=cdrom,bootindex=0 \
-  -boot order=d,menu=on \
-  -serial stdio \
-  -monitor none \
-  -display none \
-  -vga none
+# Use timeout if specified to prevent indefinite hangs (useful for AI agents)
+
+if [ "${TIMEOUT}" -eq 0 ]; then
+  echo "Starting QEMU in interactive mode (Ctrl+C to exit)..."
+  # No timeout - run indefinitely
+  exec qemu-system-x86_64 \
+    -machine q35,accel=tcg \
+    -m 512M \
+    -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+    -drive if=pflash,format=raw,file="${OVMF_VARS_RUNTIME}" \
+    -device ich9-ahci,id=ahci0,bus=pcie.0,addr=0x3 \
+    -drive if=none,id=cdrom,media=cdrom,readonly=on,file="${ISO_PATH}" \
+    -device ide-cd,bus=ahci0.0,drive=cdrom,bootindex=0 \
+    -boot order=d,menu=on \
+    -serial stdio \
+    -monitor none \
+    -display none \
+    -vga std
+else
+  echo "Starting QEMU with ${TIMEOUT}s timeout (AI agent mode, logging to ${LOG_FILE})..."
+  # With timeout - capture output and kill after specified time
+  timeout "${TIMEOUT}s" qemu-system-x86_64 \
+    -machine q35,accel=tcg \
+    -m 512M \
+    -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+    -drive if=pflash,format=raw,file="${OVMF_VARS_RUNTIME}" \
+    -device ich9-ahci,id=ahci0,bus=pcie.0,addr=0x3 \
+    -drive if=none,id=cdrom,media=cdrom,readonly=on,file="${ISO_PATH}" \
+    -device ide-cd,bus=ahci0.0,drive=cdrom,bootindex=0 \
+    -boot order=d,menu=on \
+    -serial stdio \
+    -monitor none \
+    -nographic \
+    -vga std \
+    2>&1 | tee "${LOG_FILE}"
+  
+  EXIT_CODE=$?
+  if [ ${EXIT_CODE} -eq 124 ]; then
+    echo "QEMU terminated after ${TIMEOUT}s timeout" | tee -a "${LOG_FILE}"
+  fi
+  exit ${EXIT_CODE}
+fi

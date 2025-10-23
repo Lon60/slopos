@@ -4,40 +4,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is **SlopOS**, an x86_64 kernel project that boots via GRUB2 with UEFI/Multiboot2. The kernel transitions from 32-bit mode to 64-bit long mode and implements a higher-half mapped kernel with framebuffer-only output.
+**SlopOS** is an x86_64 kernel that boots via **Limine bootloader** using UEFI/Multiboot2. The kernel transitions from 32-bit to 64-bit long mode with higher-half mapping and framebuffer-only output.
 
-## Build System & Commands
+**✅ Status**: Kernel boots successfully! Reaches 64-bit mode and outputs via serial port.
 
-### Build Configuration
-- Uses **Meson** build system with **LLVM/Clang** cross-compilation setup
-- Cross-compilation target: `x86_64-unknown-none` (freestanding)
-- Configuration file: `metal.ini` (Meson cross-file)
+## Build System
 
-### Key Build Commands
+- **Build System**: Meson + LLVM/Clang cross-compilation
+- **Target**: `x86_64-unknown-none` (freestanding)
+- **Config**: `metal.ini` (Meson cross-file)
+- **Bootloader**: Limine (multiboot2)
+
+### Quick Build
 ```bash
-# Configure and build the freestanding kernel
+# Setup (first time only)
 meson setup builddir --cross-file=metal.ini
+
+# Build kernel
 meson compile -C builddir
 
-# Package a UEFI-bootable ISO (produces builddir/slop.iso by default)
+# Create bootable ISO
 scripts/build_iso.sh
 ```
 
-The ISO helper automatically:
-
-* copies `builddir/kernel.elf` into a temporary staging tree,
-* embeds `iso/boot/grub/grub.cfg` into a freshly generated `EFI/BOOT/BOOTX64.EFI` via `grub-mkstandalone`, and
-* emits a GPT/UEFI compatible image using `xorriso`.
-
-Missing prerequisites (e.g. `grub-efi-amd64-bin`, `xorriso`) are reported with install hints before any artifacts are touched.
+The build script auto-downloads Limine to `third_party/limine/` and creates a hybrid BIOS/UEFI ISO at `builddir/slop.iso`.
 
 ### Testing
-Run the kernel under QEMU + OVMF once the ISO has been produced:
 ```bash
-scripts/run_qemu_ovmf.sh builddir/slop.iso
+# Interactive (Ctrl+C to exit)
+scripts/run_qemu_ovmf.sh
+
+# With timeout (for AI agents)
+scripts/run_qemu_ovmf.sh builddir/slop.iso 15
+cat test_output.log | grep "KERN"
+
+# Help
+scripts/run_qemu_ovmf.sh --help
 ```
-* Pass `scripts/run_qemu_ovmf_video.sh builddir/slop.iso` for a graphical window (GTK by default).
-* Both launchers reuse `scripts/setup_ovmf.sh` to fetch firmware when it is not already cached under `third_party/ovmf/`.
+
+**Success**: Should output `KERN` via serial port.
+
+Scripts auto-download OVMF firmware to `third_party/ovmf/` if needed.
 
 ## CRITICAL SAFETY GUIDELINES
 
@@ -51,68 +58,52 @@ scripts/run_qemu_ovmf.sh builddir/slop.iso
 
 This is a development kernel that must only be tested in virtualized environments.
 
-## Architecture & Design
+## Architecture
 
-### Boot Process
-1. **GRUB2 UEFI** loads kernel ELF via Multiboot2 protocol
-2. **32-bit assembly entry** (`_start`) with Multiboot2 header in `.multiboot2_header` section
-3. **Transition to 64-bit long mode** with GDT/IDT setup
-4. **Higher-half kernel mapping** at `0xFFFFFFFF80000000` (see `link.ld`)
+### Boot Flow
+1. **Limine** loads kernel via Multiboot2 (`limine.cfg`)
+2. **32-bit entry** (`boot/entry32.s`) - verify CPU, setup page tables (PML4/PDPT/PD)
+3. **Enable long mode** - PAE + paging + 64-bit GDT
+4. **64-bit entry** (`boot/entry64.s`) - currently outputs "KERN" and halts
+5. **Higher-half kernel** at `0xFFFFFFFF80000000` (`link.ld`)
 
-### Memory Layout
-- **Linker script**: `link.ld` - ensures Multiboot2 header first, higher-half mapping
-- **Memory management**: Buddy allocator backed by UEFI memory descriptors
-- **Paging**: PML4/PDPT/PD/PT structure with identity mapping for early boot
+### Memory
+- **Paging**: Identity map (0-2GB) + higher-half kernel
+- **Allocators**: Buddy allocator (physical), kmalloc (virtual)
+- **Stack**: 16KB at 0x20000 for early boot
 
-### Key Components
-- **boot/**: 32-bit to 64-bit transition assembly
-- **mm/**: Memory management (buddy allocator, paging)
-- **video/**: Framebuffer driver with software rendering
-- **drivers/**: Device drivers and interrupt handling
+### Components
+- `boot/` - Assembly entry points and transitions
+- `mm/` - Memory management (paging, allocators)
+- `video/` - Framebuffer driver (software rendering)
+- `drivers/` - Interrupt handling, serial, PIC/APIC
+- `sched/` - Task switcher (cooperative, single-threaded)
 
-### Display System
-- **Framebuffer-only output** (no VGA text mode, no legacy BIOS)
-- Uses **UEFI GOP** (Graphics Output Protocol) for framebuffer access
-- **Shared framebuffer** accessible by all processes
-- Software rendering with basic primitives (text, rectangles, pixels)
+## Technical Details
 
-### Task Management
-- **Single-threaded cooperative scheduler**
-- Tasks = function pointers + allocated stacks + state
-- Round-robin scheduling with yield-based task switching
-
-## Technical Constraints
-
-### Language & Compilation
+### Language
 - **C/C++ freestanding** (no stdlib)
 - **AT&T assembly** for boot code
-- Compiler flags: `-ffreestanding`, `-fno-builtin`, `-fno-stack-protector`, `-fno-pic`, `-fno-pie`
-- Linker: `-nostdlib`, uses custom `link.ld`
+- Flags: `-ffreestanding`, `-fno-builtin`, `-fno-stack-protector`, `-mcmodel=kernel`
 
-### No Legacy Support
-- No BIOS compatibility
-- No VGA text mode
-- No HDMI-specific drivers
-- UEFI-only boot path
+### Constraints
+- UEFI-only (no BIOS/VGA text mode)
+- Framebuffer-only output (software rendering)
+- No legacy hardware drivers
 
-## Development Guidelines
+## Development Status
 
-### File Structure
-- Empty directories contain `.gitkeep` files
-- Source code not yet implemented (directories prepared for development)
-- `iso/` now only hosts template configuration; `EFI/BOOT/BOOTX64.EFI` is generated on demand by `scripts/build_iso.sh`
-- GRUB configuration template: `iso/boot/grub/grub.cfg`
-
-### Key Implementation Milestones
+### ✅ Completed
 1. Boot & 64-bit transition
-2. Paging & higher-half kernel
-3. Memory management (buddy allocator)
-4. Interrupt handling & exceptions
-5. Framebuffer initialization & software rendering
-6. Task switching & cooperative scheduler
+2. Paging (identity + higher-half)
+3. GDT/IDT setup
+4. Serial output
 
-### Error Handling
-- Kernel panic routine displays errors to framebuffer
-- No serial/console output - framebuffer is the only output method
+### ⏳ In Progress / TODO
+5. Call `kernel_main()` from assembly
+6. Memory management (buddy allocator)
+7. Parse multiboot2 info
+8. Framebuffer initialization
+9. Task switching & scheduler
 
-This project follows the detailed guidance in `GUIDANCE.md` for AI agents building the kernel step-by-step.
+See `GUIDANCE.md` for detailed roadmap and `QUICKSTART.md` for quick commands.

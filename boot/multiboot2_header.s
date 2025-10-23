@@ -12,12 +12,8 @@ multiboot2_header_start:
     .long multiboot2_header_end - multiboot2_header_start  # Header length
     .long -(0xe85250d6 + 0x00000000 + (multiboot2_header_end - multiboot2_header_start))  # Checksum
 
-    # Entry address tag - Override ELF entry point
-    .align 8                        # Ensure 8-byte alignment
-    .short 0x0003                   # Type: Entry address
-    .short 0                        # Flags: Required
-    .long 12                        # Size of this tag
-    .long _start                    # Entry point address (force to our _start)
+    # Entry address tag removed - let GRUB use ELF entry point from link.ld
+    # This avoids potential conflicts with GRUB's address calculations
 
     # Information request tag - Request UEFI memory map
     .align 8                        # Ensure 8-byte alignment
@@ -26,14 +22,8 @@ multiboot2_header_start:
     .long 12                        # Size of this tag
     .long 17                        # Request: EFI memory map
 
-    # Framebuffer tag - Request specific framebuffer configuration
-    .align 8                        # Ensure 8-byte alignment
-    .short 0x0005                   # Type: Framebuffer
-    .short 0                        # Flags: Required
-    .long 20                        # Size of this tag
-    .long 1024                      # Preferred width
-    .long 768                       # Preferred height
-    .long 32                        # Preferred depth (bits per pixel)
+    # Framebuffer tag removed - GRUB was crashing when trying to set video mode
+    # The kernel will detect and use whatever framebuffer GRUB/UEFI provides
 
     # End tag - Required to terminate the header
     .align 8                        # Ensure 8-byte alignment
