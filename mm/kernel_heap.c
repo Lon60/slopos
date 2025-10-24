@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "kernel_heap.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);

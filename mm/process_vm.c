@@ -9,6 +9,7 @@
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
 #include "../boot/integration.h"
+#include "kernel_heap.h"
 #include "paging.h"
 
 /* Forward declarations */
@@ -87,17 +88,12 @@ static vm_manager_t vm_manager = {0};
  * Returns pointer to VMA, NULL on failure
  */
 static vm_area_t *alloc_vma(void) {
-    /* For now, use static allocation from a pool */
-    /* TODO: Implement dynamic allocation once kernel heap is ready */
-    static vm_area_t vma_pool[MAX_PROCESSES * 8];
-    static uint32_t vma_pool_index = 0;
-
-    if (vma_pool_index >= (MAX_PROCESSES * 8)) {
-        kprint("alloc_vma: VMA pool exhausted\n");
+    vm_area_t *vma = (vm_area_t *)kmalloc(sizeof(vm_area_t));
+    if (!vma) {
+        kprint("alloc_vma: Failed to allocate VMA structure\n");
         return NULL;
     }
 
-    vm_area_t *vma = &vma_pool[vma_pool_index++];
     vma->start_addr = 0;
     vma->end_addr = 0;
     vma->flags = 0;
@@ -113,8 +109,7 @@ static vm_area_t *alloc_vma(void) {
 static void free_vma(vm_area_t *vma) {
     if (!vma) return;
 
-    /* For static allocation, just mark as unused */
-    vma->ref_count = 0;
+    kfree(vma);
 }
 
 /*
@@ -186,6 +181,7 @@ static int remove_vma_from_process(process_vm_t *process, uint64_t start, uint64
         if (vma->start_addr == start && vma->end_addr == end) {
             /* Remove from list */
             *current = vma->next;
+            vma->next = NULL;
             free_vma(vma);
             return 0;
         }
@@ -299,6 +295,7 @@ int destroy_process_vm(uint32_t process_id) {
         free_vma(vma);
         vma = next;
     }
+    process->vma_list = NULL;
 
     /* Free page directory structures */
     if (process->page_dir) {
@@ -324,6 +321,8 @@ int destroy_process_vm(uint32_t process_id) {
 
     /* Mark process slot as free */
     process->process_id = INVALID_PROCESS_ID;
+    process->vma_list = NULL;
+    process->next = NULL;
     vm_manager.num_processes--;
 
     return 0;
