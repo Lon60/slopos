@@ -68,13 +68,6 @@ static volatile struct limine_kernel_address_request kernel_address_request = {
 __attribute__((used, section(".limine_requests_end_marker")))
 static volatile uint64_t limine_requests_end_marker[1] = {0};
 
-/* Halt and catch fire if the bootloader doesn't support requested features */
-static void hcf(void) {
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-
 /* ========================================================================
  * GLOBAL SYSTEM INFORMATION
  * ======================================================================== */
@@ -311,4 +304,3 @@ uint64_t get_kernel_phys_base(void) {
 uint64_t get_kernel_virt_base(void) {
     return system_info.kernel_virt_base;
 }
-

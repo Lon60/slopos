@@ -5,8 +5,10 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "framebuffer.h"
 
 /* Forward declarations */
 int graphics_draw_pixel(int x, int y, uint32_t color);
@@ -609,6 +611,38 @@ static struct {
 } console = {0, 0, 0xFFFFFFFF, 0x00000000, 0};
 
 /*
+ * Scroll framebuffer up by one character row
+ */
+static void font_console_scroll_up(void) {
+    framebuffer_info_t *info = framebuffer_get_info();
+    if (!info || !info->initialized) {
+        return;
+    }
+
+    uint8_t *buffer = info->virtual_addr;
+    uint32_t pitch = info->pitch;
+    uint32_t bytes_per_pixel = info->bpp / 8;
+
+    if (!buffer || pitch == 0 || bytes_per_pixel == 0) {
+        return;
+    }
+
+    if (info->height <= FONT_CHAR_HEIGHT) {
+        graphics_draw_rect_filled(0, 0, info->width, info->height, console.bg_color);
+        console.cursor_y = 0;
+        return;
+    }
+
+    size_t src_offset = (size_t)FONT_CHAR_HEIGHT * pitch;
+    size_t copy_bytes = (size_t)(info->height - FONT_CHAR_HEIGHT) * pitch;
+
+    memmove(buffer, buffer + src_offset, copy_bytes);
+    graphics_draw_rect_filled(0, info->height - FONT_CHAR_HEIGHT,
+                              info->width, FONT_CHAR_HEIGHT, console.bg_color);
+    console.cursor_y = (int)info->height - FONT_CHAR_HEIGHT;
+}
+
+/*
  * Initialize console
  */
 void font_console_init(uint32_t fg_color, uint32_t bg_color) {
@@ -646,9 +680,7 @@ int font_console_putc(char c) {
 
     /* Scroll if necessary */
     if (console.cursor_y + FONT_CHAR_HEIGHT > (int)framebuffer_get_height()) {
-        /* Simple scroll: move cursor to top for now */
-        /* TODO: Implement proper scrolling */
-        console.cursor_y = 0;
+        font_console_scroll_up();
     }
 
     return FONT_SUCCESS;
