@@ -6,8 +6,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "paging.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -31,20 +31,6 @@ int free_page_frame(uint64_t phys_addr);
  * PAGE TABLE STRUCTURES AND MANAGEMENT
  * ======================================================================== */
 
-/* Page table structure - aligned to 4KB boundary as required by x86_64 */
-typedef struct {
-    uint64_t entries[ENTRIES_PER_PAGE_TABLE];
-} __attribute__((aligned(PAGE_ALIGN))) page_table_t;
-
-/* Process page directory structure for process isolation */
-typedef struct process_page_dir {
-    page_table_t *pml4;                    /* Process PML4 table */
-    uint64_t pml4_phys;                    /* Physical address of PML4 */
-    uint32_t ref_count;                    /* Reference count for sharing */
-    uint32_t process_id;                   /* Process ID for debugging */
-    struct process_page_dir *next;         /* Link for process list */
-} process_page_dir_t;
-
 /* External references to early boot page tables from linker */
 extern page_table_t early_pml4;
 extern page_table_t early_pdpt;
@@ -61,6 +47,32 @@ static process_page_dir_t kernel_page_dir = {
 
 /* Current active page directory for running process */
 static process_page_dir_t *current_page_dir = &kernel_page_dir;
+
+/* ========================================================================
+ * SHARED HELPER IMPLEMENTATIONS
+ * ======================================================================== */
+
+/*
+ * Copy kernel mappings from the bootstrap PML4 into the destination table.
+ * New process address spaces inherit higher-half kernel identity.
+ */
+void paging_copy_kernel_mappings(page_table_t *dest_pml4) {
+    if (!dest_pml4) {
+        return;
+    }
+
+    if (!kernel_page_dir.pml4) {
+        kprint("paging_copy_kernel_mappings: Kernel PML4 unavailable\n");
+        return;
+    }
+
+    for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
+        uint64_t entry = kernel_page_dir.pml4->entries[i];
+        if (entry) {
+            dest_pml4->entries[i] = entry;
+        }
+    }
+}
 
 /* ========================================================================
  * PAGE TABLE UTILITY FUNCTIONS

@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../mm/paging.h"
 #include "task.h"
 
 /* Forward declarations */
@@ -16,6 +17,7 @@ int destroy_process_vm(uint32_t process_id);
 uint64_t process_vm_alloc(uint32_t process_id, uint64_t size, uint32_t flags);
 int process_vm_free(uint32_t process_id, uint64_t vaddr, uint64_t size);
 void kernel_panic(const char *message);
+process_page_dir_t *process_vm_get_page_dir(uint32_t process_id);
 
 /* Task manager structure */
 typedef struct task_manager {
@@ -188,6 +190,12 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
 
     /* Initialize CPU context */
     init_task_context(task);
+
+    /* Record page directory for context switches */
+    process_page_dir_t *page_dir = process_vm_get_page_dir(process_id);
+    if (page_dir && page_dir->pml4_phys) {
+        task->context.cr3 = page_dir->pml4_phys;
+    }
 
     /* Update task manager */
     task_manager.num_tasks++;

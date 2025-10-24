@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/integration.h"
+#include "paging.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -47,20 +49,6 @@ typedef struct vm_area {
     uint32_t ref_count;           /* Reference count for sharing */
     struct vm_area *next;         /* Next VMA in process */
 } vm_area_t;
-
-/* Page table structure reference (from paging.c) */
-typedef struct {
-    uint64_t entries[ENTRIES_PER_PAGE_TABLE];
-} __attribute__((aligned(PAGE_ALIGN))) page_table_t;
-
-/* Process page directory structure (from paging.c) */
-typedef struct process_page_dir {
-    page_table_t *pml4;                    /* Process PML4 table */
-    uint64_t pml4_phys;                    /* Physical address of PML4 */
-    uint32_t ref_count;                    /* Reference count for sharing */
-    uint32_t process_id;                   /* Process ID for debugging */
-    struct process_page_dir *next;         /* Link for process list */
-} process_page_dir_t;
 
 /* Process virtual memory descriptor */
 typedef struct process_vm {
@@ -141,6 +129,18 @@ static process_vm_t *find_process_vm(uint32_t process_id) {
     return NULL;
 }
 
+/*
+ * Expose process page directory to other subsystems
+ */
+process_page_dir_t *process_vm_get_page_dir(uint32_t process_id) {
+    process_vm_t *process = find_process_vm(process_id);
+    if (!process) {
+        return NULL;
+    }
+
+    return process->page_dir;
+}
+
 /* ========================================================================
  * VIRTUAL MEMORY AREA MANAGEMENT
  * ======================================================================== */
@@ -196,24 +196,6 @@ static int remove_vma_from_process(process_vm_t *process, uint64_t start, uint64
     return -1;  /* VMA not found */
 }
 
-/*
- * Check if a virtual address range is valid for a process
- */
-static int is_valid_user_range(uint64_t start, uint64_t end) {
-    /* Ensure addresses are in user space */
-    if (start >= KERNEL_VIRTUAL_BASE || end >= KERNEL_VIRTUAL_BASE) {
-        return 0;
-    }
-
-    /* Ensure addresses are page-aligned */
-    if ((start & (PAGE_SIZE_4KB - 1)) || (end & (PAGE_SIZE_4KB - 1))) {
-        return 0;
-    }
-
-    /* Ensure valid range */
-    return start < end;
-}
-
 /* ========================================================================
  * PROCESS CREATION AND DESTRUCTION
  * ======================================================================== */
@@ -235,13 +217,36 @@ uint32_t create_process_vm(void) {
         return INVALID_PROCESS_ID;
     }
 
+    /* Prepare new page table */
+    page_table_t *pml4 = (page_table_t*)pml4_phys;
+    for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
+        pml4->entries[i] = 0;
+    }
+
     /* Find free process slot */
     process_vm_t *process = &vm_manager.processes[vm_manager.num_processes];
     uint32_t process_id = vm_manager.next_process_id++;
 
+    /* Allocate process page directory descriptor */
+    process_page_dir_t *page_dir = (process_page_dir_t*)kmalloc(sizeof(process_page_dir_t));
+    if (!page_dir) {
+        kprint("create_process_vm: Failed to allocate page directory\n");
+        free_page_frame(pml4_phys);
+        return INVALID_PROCESS_ID;
+    }
+
+    page_dir->pml4 = pml4;
+    page_dir->pml4_phys = pml4_phys;
+    page_dir->ref_count = 1;
+    page_dir->process_id = process_id;
+    page_dir->next = NULL;
+
+    /* Inherit kernel mappings */
+    paging_copy_kernel_mappings(page_dir->pml4);
+
     /* Initialize process VM descriptor */
     process->process_id = process_id;
-    process->page_dir = NULL;  /* TODO: Create process_page_dir_t */
+    process->page_dir = page_dir;
     process->vma_list = NULL;
     process->code_start = PROCESS_CODE_START;
     process->data_start = PROCESS_DATA_START;
@@ -295,9 +300,13 @@ int destroy_process_vm(uint32_t process_id) {
         vma = next;
     }
 
-    /* Free page directory physical page */
-    if (process->page_dir && process->page_dir->pml4_phys) {
-        free_page_frame(process->page_dir->pml4_phys);
+    /* Free page directory structures */
+    if (process->page_dir) {
+        if (process->page_dir->pml4_phys) {
+            free_page_frame(process->page_dir->pml4_phys);
+        }
+        kfree(process->page_dir);
+        process->page_dir = NULL;
     }
 
     /* Remove from process list */

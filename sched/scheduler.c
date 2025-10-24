@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../mm/paging.h"
 
 /* Include task and scheduler definitions */
 #include "task.h"
@@ -20,6 +21,9 @@ extern int task_get_info(uint32_t task_id, task_t **task_info);
 
 /* Forward declarations from context_switch.s */
 extern void context_switch(void *old_context, void *new_context);
+
+/* Forward declarations from process_vm.c */
+extern process_page_dir_t *process_vm_get_page_dir(uint32_t process_id);
 
 /* Task states from task.c */
 #define TASK_STATE_INVALID            0
@@ -259,6 +263,16 @@ static void switch_to_task(task_t *new_task) {
     scheduler.current_task = new_task;
     task_set_current(new_task);
     scheduler.total_switches++;
+
+    /* Ensure CR3 matches the task's process address space */
+    if (new_task->process_id != INVALID_PROCESS_ID) {
+        process_page_dir_t *page_dir = process_vm_get_page_dir(new_task->process_id);
+        if (page_dir && page_dir->pml4_phys) {
+            new_task->context.cr3 = page_dir->pml4_phys;
+        } else {
+            kprint("switch_to_task: Missing page directory for task\n");
+        }
+    }
 
     /* Perform actual context switch */
     if (old_task) {
