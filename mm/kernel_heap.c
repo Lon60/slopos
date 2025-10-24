@@ -13,6 +13,9 @@
 void kernel_panic(const char *message);
 uint64_t alloc_page_frame(uint32_t flags);
 int free_page_frame(uint64_t phys_addr);
+int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
+int unmap_page(uint64_t vaddr);
+uint64_t virt_to_phys(uint64_t vaddr);
 
 /* ========================================================================
  * KERNEL HEAP CONSTANTS
@@ -261,21 +264,32 @@ static int expand_heap(uint32_t min_size) {
     kprint_decimal(pages_needed);
     kprint(" pages\n");
 
+    uint64_t expansion_start = kernel_heap.current_break;
+    uint32_t total_bytes = pages_needed * PAGE_SIZE_4KB;
+    uint32_t mapped_pages = 0;
+
     /* Allocate physical pages and map them */
     for (uint32_t i = 0; i < pages_needed; i++) {
         uint64_t phys_page = alloc_page_frame(0);
         if (!phys_page) {
             kprint("expand_heap: Failed to allocate physical page\n");
-            return -1;
+            goto rollback;
         }
 
-        /* TODO: Map virtual page to physical page */
-        /* For now, assume identity mapping in kernel space */
+        uint64_t virt_page = expansion_start + (uint64_t)i * PAGE_SIZE_4KB;
+
+        if (map_page_4kb(virt_page, phys_page, PAGE_KERNEL_RW) != 0) {
+            kprint("expand_heap: Failed to map heap page\n");
+            free_page_frame(phys_page);
+            goto rollback;
+        }
+
+        mapped_pages++;
     }
 
     /* Create large free block from new pages */
-    uint64_t new_block_addr = kernel_heap.current_break;
-    uint32_t new_block_size = pages_needed * PAGE_SIZE_4KB - sizeof(heap_block_t);
+    uint64_t new_block_addr = expansion_start;
+    uint32_t new_block_size = total_bytes - sizeof(heap_block_t);
 
     heap_block_t *new_block = (heap_block_t*)new_block_addr;
     new_block->magic = BLOCK_MAGIC_FREE;
@@ -286,14 +300,26 @@ static int expand_heap(uint32_t min_size) {
     new_block->checksum = calculate_checksum(new_block);
 
     /* Update heap break */
-    kernel_heap.current_break += pages_needed * PAGE_SIZE_4KB;
-    kernel_heap.stats.total_size += pages_needed * PAGE_SIZE_4KB;
+    kernel_heap.current_break += total_bytes;
+    kernel_heap.stats.total_size += total_bytes;
     kernel_heap.stats.free_size += new_block_size;
 
     /* Add to free lists */
     add_to_free_list(new_block);
 
     return 0;
+
+rollback:
+    for (uint32_t j = 0; j < mapped_pages; j++) {
+        uint64_t virt_page = expansion_start + (uint64_t)j * PAGE_SIZE_4KB;
+        uint64_t mapped_phys = virt_to_phys(virt_page);
+        if (mapped_phys) {
+            unmap_page(virt_page);
+            free_page_frame(mapped_phys);
+        }
+    }
+
+    return -1;
 }
 
 /* ========================================================================

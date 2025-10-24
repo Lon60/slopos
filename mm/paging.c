@@ -11,6 +11,8 @@
 
 /* Forward declarations */
 void kernel_panic(const char *message);
+uint64_t alloc_page_frame(uint32_t flags);
+int free_page_frame(uint64_t phys_addr);
 
 /* ========================================================================
  * PAGE TABLE CONSTANTS - Using boot/constants.h definitions
@@ -322,6 +324,164 @@ int map_page_2mb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
     invlpg(vaddr);
 
     return 0;
+}
+
+/*
+ * Map a 4KB page in current process page directory
+ * Allocates intermediate paging structures on demand
+ */
+int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
+    if (!current_page_dir || !current_page_dir->pml4) {
+        kprint("map_page_4kb: No current page directory\n");
+        return -1;
+    }
+
+    if ((vaddr & (PAGE_SIZE_4KB - 1)) || (paddr & (PAGE_SIZE_4KB - 1))) {
+        kprint("map_page_4kb: Addresses must be 4KB aligned\n");
+        return -1;
+    }
+
+    uint16_t pml4_idx = pml4_index(vaddr);
+    uint16_t pdpt_idx = pdpt_index(vaddr);
+    uint16_t pd_idx = pd_index(vaddr);
+    uint16_t pt_idx = pt_index(vaddr);
+
+    page_table_t *pml4 = current_page_dir->pml4;
+    page_table_t *pdpt = NULL;
+    page_table_t *pd = NULL;
+    page_table_t *pt = NULL;
+
+    uint64_t pdpt_phys = 0;
+    uint64_t pd_phys = 0;
+    uint64_t pt_phys = 0;
+
+    int allocated_pdpt = 0;
+    int allocated_pd = 0;
+    int allocated_pt = 0;
+
+    uint64_t pml4_entry = pml4->entries[pml4_idx];
+    if (!pte_present(pml4_entry)) {
+        pdpt_phys = alloc_page_frame(0);
+        if (!pdpt_phys) {
+            kprint("map_page_4kb: Failed to allocate PDPT\n");
+            return -1;
+        }
+
+        pdpt = (page_table_t*)pdpt_phys;
+        for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
+            pdpt->entries[i] = 0;
+        }
+
+        pml4->entries[pml4_idx] = pdpt_phys | PAGE_KERNEL_RW;
+        allocated_pdpt = 1;
+    } else {
+        pdpt_phys = pte_address(pml4_entry);
+        pdpt = (page_table_t*)pdpt_phys;
+    }
+
+    if (!pdpt) {
+        kprint("map_page_4kb: Invalid PDPT address\n");
+        goto failure;
+    }
+
+    uint64_t pdpt_entry = pdpt->entries[pdpt_idx];
+    if (!pte_present(pdpt_entry)) {
+        pd_phys = alloc_page_frame(0);
+        if (!pd_phys) {
+            kprint("map_page_4kb: Failed to allocate PD\n");
+            goto failure;
+        }
+
+        pd = (page_table_t*)pd_phys;
+        for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
+            pd->entries[i] = 0;
+        }
+
+        pdpt->entries[pdpt_idx] = pd_phys | PAGE_KERNEL_RW;
+        allocated_pd = 1;
+    } else {
+        if (pte_huge(pdpt_entry)) {
+            kprint("map_page_4kb: PDPT entry is a huge page\n");
+            goto failure;
+        }
+
+        pd_phys = pte_address(pdpt_entry);
+        pd = (page_table_t*)pd_phys;
+    }
+
+    if (!pd) {
+        kprint("map_page_4kb: Invalid PD address\n");
+        goto failure;
+    }
+
+    uint64_t pd_entry = pd->entries[pd_idx];
+    if (!pte_present(pd_entry)) {
+        pt_phys = alloc_page_frame(0);
+        if (!pt_phys) {
+            kprint("map_page_4kb: Failed to allocate PT\n");
+            goto failure;
+        }
+
+        pt = (page_table_t*)pt_phys;
+        for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
+            pt->entries[i] = 0;
+        }
+
+        pd->entries[pd_idx] = pt_phys | PAGE_KERNEL_RW;
+        allocated_pt = 1;
+    } else {
+        if (pte_huge(pd_entry)) {
+            kprint("map_page_4kb: PD entry is a large page\n");
+            goto failure;
+        }
+
+        pt_phys = pte_address(pd_entry);
+        pt = (page_table_t*)pt_phys;
+    }
+
+    if (!pt) {
+        kprint("map_page_4kb: Invalid PT address\n");
+        goto failure;
+    }
+
+    uint64_t pt_entry = pt->entries[pt_idx];
+    if (pte_present(pt_entry)) {
+        kprint("map_page_4kb: Virtual address already mapped\n");
+        goto failure;
+    }
+
+    pt->entries[pt_idx] = paddr | (flags | PAGE_PRESENT);
+    invlpg(vaddr);
+
+    return 0;
+
+failure:
+    if (allocated_pt) {
+        if (pd) {
+            pd->entries[pd_idx] = 0;
+        }
+        if (pt_phys) {
+            free_page_frame(pt_phys);
+        }
+    }
+
+    if (allocated_pd) {
+        if (pdpt) {
+            pdpt->entries[pdpt_idx] = 0;
+        }
+        if (pd_phys) {
+            free_page_frame(pd_phys);
+        }
+    }
+
+    if (allocated_pdpt) {
+        pml4->entries[pml4_idx] = 0;
+        if (pdpt_phys) {
+            free_page_frame(pdpt_phys);
+        }
+    }
+
+    return -1;
 }
 
 /*
