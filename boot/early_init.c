@@ -28,6 +28,8 @@ extern void init_pic(void);
 extern void dump_idt(void);
 extern void load_idt(void);
 
+extern void disable_pic(void);
+
 // Kernel state tracking
 static volatile int kernel_initialized = 0;
 
@@ -77,16 +79,6 @@ static void initialize_kernel_subsystems(void) {
     pic_init();
     early_debug_string("SlopOS: PIC initialized - interrupt control ready\n");
 
-    // Skip APIC initialization for now - it requires MMIO mapping
-    // which needs full memory management to be set up first
-    // TODO: Initialize APIC after memory management is fully operational
-    early_debug_string("SlopOS: Skipping APIC initialization (requires MMIO mapping)\n");
-    early_debug_string("SlopOS: Using PIC for interrupt control\n");
-
-    // Skip interrupt test framework for now - we'll add proper testing later
-    // TODO: Re-enable interrupt testing after full boot is working
-    early_debug_string("SlopOS: Interrupt test framework skipped for initial boot\n");
-
     // Initialize Limine boot protocol
     early_debug_string("SlopOS: Initializing Limine boot protocol...\n");
     extern int init_limine_protocol(void);
@@ -110,6 +102,24 @@ static void initialize_kernel_subsystems(void) {
     // Initialize kernel memory layout
     init_kernel_memory_layout();
     early_debug_string("SlopOS: Kernel memory layout initialized\n");
+
+    // Detect and initialize APIC now that memory management is available
+    early_debug_string("SlopOS: Detecting Local APIC...\n");
+    if (apic_detect()) {
+        early_debug_string("SlopOS: Initializing Local APIC...\n");
+        if (apic_init() == 0) {
+            early_debug_string("SlopOS: Local APIC initialized, masking legacy PIC\n");
+            disable_pic();
+        } else {
+            early_debug_string("SlopOS: APIC initialization failed, retaining PIC\n");
+        }
+    } else {
+        early_debug_string("SlopOS: Local APIC unavailable, continuing with PIC\n");
+    }
+
+    // Skip interrupt test framework for now - we'll add proper testing later
+    // TODO: Re-enable interrupt testing after full boot is working
+    early_debug_string("SlopOS: Interrupt test framework skipped for initial boot\n");
 
     // Mark kernel as initialized
     kernel_initialized = 1;
