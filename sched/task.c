@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/constants.h"
+#include "../boot/debug.h"
 #include "../drivers/serial.h"
 #include "../mm/paging.h"
 #include "task.h"
@@ -183,7 +184,7 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     task->entry_arg = arg;
     task->time_slice = 10;  /* Default time slice */
     task->total_runtime = 0;
-    task->creation_time = 0;  /* TODO: Get system time */
+    task->creation_time = debug_get_timestamp();
     task->yield_count = 0;
     task->next = NULL;
     task->prev = NULL;
