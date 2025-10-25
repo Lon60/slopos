@@ -30,6 +30,35 @@ static struct interrupt_test_config active_config = {
 static uint64_t estimated_cycles_per_ms = 0;
 static uint64_t test_timeout_cycles = 0;
 
+#define TEST_MAX_EXCEPTION_DEPTH 8
+#define TEST_STATE_GUARD 0xC0DECAFEu
+
+enum test_recovery_reason {
+    TEST_RECOVERY_NONE = 0,
+    TEST_RECOVERY_DEPTH_OVERFLOW,
+    TEST_RECOVERY_FRAME_CORRUPTION,
+    TEST_RECOVERY_INVALID_FRAME,
+};
+
+struct saved_exception_state {
+    struct interrupt_frame snapshot;
+    uint32_t checksum;
+    uint32_t guard;
+};
+
+static struct saved_exception_state exception_state_stack[TEST_MAX_EXCEPTION_DEPTH];
+
+static void reset_exception_state(void);
+static struct saved_exception_state *push_exception_state(struct interrupt_frame *frame);
+static void pop_exception_state(void);
+static uint32_t compute_frame_checksum(const struct interrupt_frame *frame);
+static int validate_exception_state(struct saved_exception_state *slot,
+                                    struct interrupt_frame *frame);
+static void handle_exception_recovery(enum test_recovery_reason reason,
+                                      struct interrupt_frame *frame,
+                                      const struct saved_exception_state *slot);
+static const char *recovery_reason_string(enum test_recovery_reason reason);
+
 static uint64_t read_tsc(void) {
     uint32_t low = 0;
     uint32_t high = 0;
@@ -82,6 +111,186 @@ static uint64_t cycles_to_ms(uint64_t cycles) {
     return cycles / estimated_cycles_per_ms;
 }
 
+static void zero_interrupt_frame(struct interrupt_frame *frame) {
+    if (!frame) {
+        return;
+    }
+
+    uint8_t *bytes = (uint8_t *)frame;
+    for (size_t i = 0; i < sizeof(struct interrupt_frame); i++) {
+        bytes[i] = 0;
+    }
+}
+
+static void copy_interrupt_frame(struct interrupt_frame *dst,
+                                 const struct interrupt_frame *src) {
+    if (!dst || !src) {
+        return;
+    }
+
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    for (size_t i = 0; i < sizeof(struct interrupt_frame); i++) {
+        d[i] = s[i];
+    }
+}
+
+static void copy_saved_exception_state(struct saved_exception_state *dst,
+                                       const struct saved_exception_state *src) {
+    if (!dst || !src) {
+        return;
+    }
+
+    copy_interrupt_frame(&dst->snapshot, &src->snapshot);
+    dst->checksum = src->checksum;
+    dst->guard = src->guard;
+}
+
+static void reset_exception_state(void) {
+    for (int i = 0; i < TEST_MAX_EXCEPTION_DEPTH; i++) {
+        zero_interrupt_frame(&exception_state_stack[i].snapshot);
+        exception_state_stack[i].checksum = 0;
+        exception_state_stack[i].guard = 0;
+    }
+    test_ctx.exception_depth = 0;
+    test_ctx.context_corrupted = 0;
+    test_ctx.abort_requested = 0;
+    test_ctx.last_recovery_reason = TEST_RECOVERY_NONE;
+    test_ctx.recovery_rip = 0;
+}
+
+static uint32_t compute_frame_checksum(const struct interrupt_frame *frame) {
+    if (!frame) {
+        return 0;
+    }
+
+    struct interrupt_frame temp;
+    copy_interrupt_frame(&temp, frame);
+    temp.rip = 0;
+
+    const uint64_t *words = (const uint64_t *)&temp;
+    size_t count = sizeof(temp) / sizeof(uint64_t);
+    uint64_t hash = 0xCBF29CE484222325ULL;  // FNV offset basis
+
+    for (size_t i = 0; i < count; i++) {
+        hash ^= words[i];
+        hash *= 0x100000001B3ULL;  // FNV prime
+    }
+
+    return (uint32_t)(hash ^ (hash >> 32));
+}
+
+static struct saved_exception_state *push_exception_state(struct interrupt_frame *frame) {
+    if (!frame) {
+        return NULL;
+    }
+
+    if (test_ctx.exception_depth >= TEST_MAX_EXCEPTION_DEPTH) {
+        return NULL;
+    }
+
+    struct saved_exception_state *slot = &exception_state_stack[test_ctx.exception_depth];
+    copy_interrupt_frame(&slot->snapshot, frame);
+    slot->checksum = compute_frame_checksum(frame);
+    slot->guard = TEST_STATE_GUARD;
+
+    test_ctx.exception_depth++;
+    return slot;
+}
+
+static void pop_exception_state(void) {
+    if (test_ctx.exception_depth <= 0) {
+        return;
+    }
+
+    test_ctx.exception_depth--;
+
+    struct saved_exception_state *slot = &exception_state_stack[test_ctx.exception_depth];
+    zero_interrupt_frame(&slot->snapshot);
+    slot->checksum = 0;
+    slot->guard = 0;
+}
+
+static int validate_exception_state(struct saved_exception_state *slot,
+                                    struct interrupt_frame *frame) {
+    if (!slot || !frame) {
+        return 0;
+    }
+
+    if (slot->guard != TEST_STATE_GUARD) {
+        return 0;
+    }
+
+    uint32_t checksum = compute_frame_checksum(frame);
+    return checksum == slot->checksum;
+}
+
+static const char *recovery_reason_string(enum test_recovery_reason reason) {
+    switch (reason) {
+        case TEST_RECOVERY_NONE:
+            return "none";
+        case TEST_RECOVERY_DEPTH_OVERFLOW:
+            return "state-stack overflow";
+        case TEST_RECOVERY_FRAME_CORRUPTION:
+            return "frame corruption detected";
+        case TEST_RECOVERY_INVALID_FRAME:
+            return "invalid frame pointer";
+        default:
+            return "unknown";
+    }
+}
+
+static void handle_exception_recovery(enum test_recovery_reason reason,
+                                      struct interrupt_frame *frame,
+                                      const struct saved_exception_state *slot) {
+    struct interrupt_frame fallback;
+    struct interrupt_frame *active_frame = frame;
+
+    if (!active_frame) {
+        zero_interrupt_frame(&fallback);
+        if (slot) {
+            copy_interrupt_frame(&fallback, &slot->snapshot);
+        }
+        active_frame = &fallback;
+    }
+
+    if (slot) {
+        copy_interrupt_frame(active_frame, &slot->snapshot);
+        if (frame) {
+            copy_interrupt_frame(frame, &slot->snapshot);
+        }
+    }
+
+    test_ctx.abort_requested = 1;
+    test_ctx.context_corrupted = 1;
+    test_ctx.last_recovery_reason = (int)reason;
+
+    if (!test_ctx.exception_occurred) {
+        test_ctx.exception_occurred = 1;
+    }
+    test_ctx.exception_vector = (int)(active_frame->vector & 0xFF);
+
+    uint64_t next_rip = test_ctx.recovery_rip;
+    if (next_rip == 0 && test_ctx.resume_rip != 0) {
+        next_rip = test_ctx.resume_rip;
+    }
+    if (next_rip == 0) {
+        next_rip = active_frame->rip + 1;
+    }
+    if (frame) {
+        frame->rip = next_rip;
+    }
+    active_frame->rip = next_rip;
+    test_ctx.resume_rip = 0;
+
+    if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+        kprint("INTERRUPT_TEST: Recovery triggered (");
+        kprint(recovery_reason_string(reason));
+        kprint(") for vector ");
+        kprint_dec((int)(active_frame->vector & 0xFF));
+        kprintln("");
+    }
+}
 static void interrupt_test_apply_config(const struct interrupt_test_config *config) {
     if (config) {
         active_config = *config;
@@ -127,6 +336,7 @@ void interrupt_test_init(const struct interrupt_test_config *config) {
     }
 
     exception_set_mode(EXCEPTION_MODE_TEST);
+    reset_exception_state();
 
     // Clear test context
     test_ctx.test_active = 0;
@@ -136,6 +346,10 @@ void interrupt_test_init(const struct interrupt_test_config *config) {
     test_ctx.test_rip = 0;
     test_ctx.resume_rip = 0;
     test_ctx.last_frame = NULL;
+    test_ctx.recovery_rip = 0;
+    test_ctx.abort_requested = 0;
+    test_ctx.context_corrupted = 0;
+    test_ctx.last_recovery_reason = TEST_RECOVERY_NONE;
 
     // Clear statistics
     test_statistics.total_tests = 0;
@@ -174,6 +388,13 @@ void interrupt_test_cleanup(void) {
     }
 
     test_ctx.test_active = 0;
+    test_ctx.expected_exception = -1;
+    test_ctx.exception_occurred = 0;
+    test_ctx.exception_vector = -1;
+    test_ctx.test_rip = 0;
+    test_ctx.resume_rip = 0;
+    test_ctx.last_frame = NULL;
+    reset_exception_state();
 
     exception_set_mode(EXCEPTION_MODE_NORMAL);
 
@@ -186,12 +407,19 @@ void interrupt_test_cleanup(void) {
  * Start a test
  */
 void test_start(const char *name, int expected_exception) {
+    reset_exception_state();
+
     test_ctx.test_active = 1;
     test_ctx.expected_exception = expected_exception;
     test_ctx.exception_occurred = 0;
     test_ctx.exception_vector = -1;
     test_ctx.resume_rip = 0;
     test_ctx.last_frame = NULL;
+    test_ctx.test_rip = 0;
+    test_ctx.recovery_rip = 0;
+    test_ctx.abort_requested = 0;
+    test_ctx.context_corrupted = 0;
+    test_ctx.last_recovery_reason = TEST_RECOVERY_NONE;
 
     // Copy test name
     int i = 0;
@@ -221,14 +449,23 @@ void test_start(const char *name, int expected_exception) {
  */
 int test_end(void) {
     int result = TEST_SUCCESS;
+    int recovery_failure = test_ctx.context_corrupted || test_ctx.abort_requested;
+    int expected_vector = test_ctx.expected_exception;
+    int vector_matches = (test_ctx.exception_vector == expected_vector);
+    int exception_seen = test_ctx.exception_occurred;
+    int last_reason = test_ctx.last_recovery_reason;
 
-    if (test_ctx.expected_exception >= 0) {
-        // We expected an exception
-        if (test_ctx.exception_occurred &&
-            test_ctx.exception_vector == test_ctx.expected_exception) {
+    if (recovery_failure) {
+        result = TEST_FAILED;
+        test_statistics.failed_tests++;
+        if (!exception_seen || expected_vector < 0 || !vector_matches) {
+            test_statistics.unexpected_exceptions++;
+        }
+    } else if (expected_vector >= 0) {
+        if (exception_seen && vector_matches) {
             result = TEST_EXCEPTION_CAUGHT;
             test_statistics.passed_tests++;
-        } else if (!test_ctx.exception_occurred) {
+        } else if (!exception_seen) {
             result = TEST_NO_EXCEPTION;
             test_statistics.failed_tests++;
         } else {
@@ -236,8 +473,7 @@ int test_end(void) {
             test_statistics.failed_tests++;
         }
     } else {
-        // We expected no exception
-        if (test_ctx.exception_occurred) {
+        if (exception_seen) {
             result = TEST_FAILED;
             test_statistics.failed_tests++;
             test_statistics.unexpected_exceptions++;
@@ -253,18 +489,28 @@ int test_end(void) {
         kprint(test_ctx.test_name);
         kprint("' ");
         kprint(get_test_result_string(result));
-        
+
         if (test_ctx.exception_occurred) {
             kprint(" - exception ");
             kprint_dec(test_ctx.exception_vector);
             kprint(" at RIP ");
             kprint_hex(test_ctx.test_rip);
         }
+        if (recovery_failure) {
+            kprint(" (recovery: ");
+            kprint(recovery_reason_string((enum test_recovery_reason)last_reason));
+            kprint(")");
+        }
         kprintln("");
     }
 
     test_ctx.test_active = 0;
     test_ctx.resume_rip = 0;
+    test_ctx.recovery_rip = 0;
+    test_ctx.last_frame = NULL;
+    test_ctx.test_rip = 0;
+    test_ctx.expected_exception = -1;
+    reset_exception_state();
     return result;
 }
 
@@ -281,6 +527,9 @@ void test_expect_exception(int vector) {
     test_ctx.exception_occurred = 0;
     test_ctx.exception_vector = -1;
     test_ctx.resume_rip = 0;
+    test_ctx.abort_requested = 0;
+    test_ctx.context_corrupted = 0;
+    test_ctx.last_recovery_reason = TEST_RECOVERY_NONE;
 }
 
 /*
@@ -289,39 +538,57 @@ void test_expect_exception(int vector) {
  * to avoid causing secondary faults
  */
 void test_exception_handler(struct interrupt_frame *frame) {
-    // Update test context first (minimal operations)
+    if (!frame) {
+        handle_exception_recovery(TEST_RECOVERY_INVALID_FRAME, frame, NULL);
+        return;
+    }
+
+    struct saved_exception_state *slot = push_exception_state(frame);
+    if (!slot) {
+        handle_exception_recovery(TEST_RECOVERY_DEPTH_OVERFLOW, frame, NULL);
+        return;
+    }
+
+    int vector = (int)(frame->vector & 0xFF);
+
     if (test_ctx.test_active) {
         test_ctx.exception_occurred = 1;
-        test_ctx.exception_vector = frame->vector;
+        test_ctx.exception_vector = vector;
         test_ctx.last_frame = frame;
-        test_ctx.test_rip = frame->rip;
+        test_ctx.test_rip = slot->snapshot.rip;
         test_statistics.exceptions_caught++;
 
-        // Adjust RIP to resume execution
         if (test_ctx.resume_rip != 0) {
             frame->rip = test_ctx.resume_rip;
             test_ctx.resume_rip = 0;
         } else {
-            // Fallback to basic instruction length emulation
-            switch (frame->vector) {
+            switch (vector) {
                 case EXCEPTION_INVALID_OPCODE:
-                    frame->rip += 2;  // UD2 is 2 bytes
+                    frame->rip += 2;
                     break;
                 case EXCEPTION_BREAKPOINT:
-                    frame->rip += 1;  // INT3 is 1 byte
+                    frame->rip += 1;
                     break;
                 case EXCEPTION_PAGE_FAULT:
                 case EXCEPTION_GENERAL_PROTECTION:
-                    frame->rip += 1;  // Best-effort - skip one byte
+                    frame->rip += 1;
                     break;
                 default:
-                    frame->rip += 1;  // Best-effort fallback
+                    frame->rip += 1;
                     break;
             }
         }
     }
-    // Note: We intentionally don't log here to avoid causing secondary faults
-    // Logging will be done after the exception handler returns
+
+    if (!validate_exception_state(slot, frame)) {
+        struct saved_exception_state saved_copy;
+        copy_saved_exception_state(&saved_copy, slot);
+        handle_exception_recovery(TEST_RECOVERY_FRAME_CORRUPTION, frame, &saved_copy);
+        pop_exception_state();
+        return;
+    }
+
+    pop_exception_state();
 }
 
 /*
@@ -330,9 +597,14 @@ void test_exception_handler(struct interrupt_frame *frame) {
 int safe_execute_test(test_function_t test_func, const char *test_name, int expected_exception) {
     test_start(test_name, expected_exception);
 
-    // Execute the test function
+    void *recovery_anchor = &&test_recovery_anchor;
+    test_ctx.recovery_rip = (uint64_t)(uintptr_t)recovery_anchor;
+    test_ctx.abort_requested = 0;
+
     test_func();
 
+test_recovery_anchor:
+    test_ctx.recovery_rip = 0;
     return test_end();
 }
 
@@ -1172,6 +1444,24 @@ void dump_test_context(void) {
             kprintln("");
         }
     }
+
+    kprint("Abort requested: ");
+    kprintln(test_ctx.abort_requested ? "Yes" : "No");
+
+    kprint("Context corrupted: ");
+    kprintln(test_ctx.context_corrupted ? "Yes" : "No");
+
+    kprint("Exception depth: ");
+    kprint_dec(test_ctx.exception_depth);
+    kprintln("");
+
+    kprint("Recovery anchor: ");
+    kprint_hex(test_ctx.recovery_rip);
+    kprintln("");
+
+    kprint("Last recovery reason: ");
+    kprint(recovery_reason_string((enum test_recovery_reason)test_ctx.last_recovery_reason));
+    kprintln("");
 
     kprintln("=== END TEST CONTEXT DUMP ===");
 }

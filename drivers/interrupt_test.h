@@ -47,6 +47,11 @@ struct test_context {
     volatile uint64_t resume_rip;
     struct interrupt_frame *last_frame;
     char test_name[64];
+    uint64_t recovery_rip;
+    int abort_requested;
+    int context_corrupted;
+    int exception_depth;
+    int last_recovery_reason;
 };
 
 // Exception test functions
