@@ -5,6 +5,7 @@
 
 #include "idt.h"
 #include "constants.h"
+#include "safe_stack.h"
 #include "../drivers/serial.h"
 
 extern void kernel_panic(const char *message);
@@ -32,7 +33,7 @@ void idt_init(void) {
     // NOTE: Direct struct member access in loops caused page faults due to
     // compiler optimization or alignment issues. Byte-level clearing works reliably.
     volatile uint8_t *idt_bytes = (volatile uint8_t *)&idt;
-    for (int i = 0; i < sizeof(idt); i++) {
+    for (size_t i = 0; i < sizeof(idt); i++) {
         idt_bytes[i] = 0;
     }
 
@@ -102,6 +103,24 @@ void idt_set_gate(uint8_t vector, uint64_t handler, uint16_t selector, uint8_t t
     idt[vector].offset_mid = (handler >> 16) & 0xFFFF;
     idt[vector].offset_high = (handler >> 32) & 0xFFFFFFFF;
     idt[vector].zero = 0;
+}
+
+void idt_set_ist(uint8_t vector, uint8_t ist_index) {
+    if ((uint16_t)vector >= IDT_ENTRIES) {
+        kprint("IDT: Invalid IST assignment for vector ");
+        kprint_dec(vector);
+        kprintln("");
+        return;
+    }
+
+    if (ist_index > 7) {
+        kprint("IDT: Invalid IST index ");
+        kprint_dec(ist_index);
+        kprintln("");
+        return;
+    }
+
+    idt[vector].ist = ist_index & 0x7;
 }
 
 /*
@@ -206,6 +225,8 @@ void idt_load(void) {
  */
 void common_exception_handler(struct interrupt_frame *frame) {
     uint8_t vector = (uint8_t)(frame->vector & 0xFF);
+
+    safe_stack_record_usage(vector, (uint64_t)frame);
 
     if (vector >= IRQ_BASE_VECTOR) {
         kprint("INTERRUPT: Vector ");
@@ -521,6 +542,24 @@ void exception_general_protection(struct interrupt_frame *frame) {
 void exception_page_fault(struct interrupt_frame *frame) {
     uint64_t fault_addr;
     __asm__ volatile ("movq %%cr2, %0" : "=r" (fault_addr));
+
+    const char *stack_name = NULL;
+    if (safe_stack_guard_fault(fault_addr, &stack_name)) {
+        kprintln("FATAL: Exception stack overflow detected via guard page");
+        if (stack_name) {
+            kprint("Guard page owner: ");
+            kprint(stack_name);
+            kprintln("");
+        }
+        kprint("Fault address: ");
+        kprint_hex(fault_addr);
+        kprintln("");
+
+        dump_interrupt_frame(frame);
+        extern void kernel_panic(const char *message);
+        kernel_panic("Exception stack overflow");
+        return;
+    }
 
     kprintln("FATAL: Page fault");
     kprint("Fault address: ");

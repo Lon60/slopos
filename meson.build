@@ -49,6 +49,8 @@ boot_sources += files(
   'boot/cpu_verify.c',
   'boot/kernel_panic.c',
   'boot/idt.c',
+  'boot/gdt.c',
+  'boot/safe_stack.c',
   'boot/debug.c',
   'boot/shutdown.c',
   'boot/limine_protocol.c'

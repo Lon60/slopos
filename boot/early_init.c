@@ -9,7 +9,9 @@
 #include "constants.h"
 #include "idt.h"
 #include "debug.h"
+#include "gdt.h"
 #include "limine_protocol.h"
+#include "safe_stack.h"
 #include "../drivers/pic.h"
 #include "../drivers/apic.h"
 #include "../drivers/interrupt_test.h"
@@ -74,9 +76,20 @@ static void initialize_kernel_subsystems(void) {
     debug_init();
     early_debug_string("SlopOS: Debug subsystem initialized\n");
 
+    // Set up GDT and TSS before enabling interrupts
+    early_debug_string("SlopOS: Initializing GDT/TSS...\n");
+    gdt_init();
+    early_debug_string("SlopOS: GDT/TSS initialized\n");
+
     // Initialize IDT FIRST - critical for debugging any issues that follow
     early_debug_string("SlopOS: Initializing IDT...\n");
     idt_init();
+
+    // Configure dedicated IST stacks for critical exceptions
+    early_debug_string("SlopOS: Configuring safe exception stacks...\n");
+    safe_stack_init();
+    early_debug_string("SlopOS: Safe exception stacks ready\n");
+
     idt_load();
     early_debug_string("SlopOS: IDT initialized - exception handling active\n");
 
