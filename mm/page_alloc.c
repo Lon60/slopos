@@ -387,3 +387,11 @@ void get_page_allocator_stats(uint32_t *total, uint32_t *free, uint32_t *allocat
     if (free) *free = page_allocator.free_frames;
     if (allocated) *allocated = page_allocator.allocated_frames;
 }
+
+size_t page_allocator_descriptor_size(void) {
+    return sizeof(page_frame_t);
+}
+
+uint32_t page_allocator_max_supported_frames(void) {
+    return MAX_PHYSICAL_PAGES;
+}
