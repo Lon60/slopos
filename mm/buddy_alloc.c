@@ -1,3 +1,8 @@
+#include <stdint.h>
+#include <stddef.h>
+#include "../boot/constants.h"
+#include "../drivers/serial.h"
+#include "phys_virt.h"
 /*
  * SlopOS Memory Management - Buddy Allocator for Physical Memory
  * Implements buddy allocation algorithm for efficient physical memory management
@@ -8,6 +13,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -376,6 +382,11 @@ uint64_t buddy_alloc_pages(uint32_t num_pages, uint32_t flags) {
         uint32_t block_index = alloc_block_from_zone(zone, order);
         if (block_index != BUDDY_MAX_BLOCKS) {
             uint64_t phys_addr = block_index_to_phys(block_index);
+
+            if ((flags & BUDDY_ALLOC_ZERO) && mm_zero_physical_page(phys_addr) != 0) {
+                kprint("buddy_alloc_pages: Failed to zero page\n");
+                return 0;
+            }
 
             buddy_allocator.allocation_count++;
             buddy_allocator.free_memory -= required_pages * BUDDY_PAGE_SIZE;

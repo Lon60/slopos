@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -171,9 +172,14 @@ uint64_t alloc_page_frame(uint32_t flags) {
 
     /* Zero page if requested */
     if (flags & ALLOC_FLAG_ZERO) {
-        /* We'll need virtual mapping to zero the page */
-        /* For now, just note the request */
-        kprint("Zero page requested but not implemented yet\n");
+        if (mm_zero_physical_page(phys_addr) != 0) {
+            frame->ref_count = 0;
+            frame->flags = 0;
+            frame->order = 0;
+            add_to_free_list(frame_num);
+            page_allocator.allocated_frames--;
+            return 0;
+        }
     }
 
     return phys_addr;

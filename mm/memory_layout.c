@@ -15,20 +15,7 @@
  * MEMORY LAYOUT CONSTANTS AND STRUCTURES
  * ======================================================================== */
 
-/* Kernel memory layout structure */
-typedef struct {
-    uint64_t kernel_start_phys;     /* Physical start of kernel */
-    uint64_t kernel_end_phys;       /* Physical end of kernel */
-    uint64_t kernel_start_virt;     /* Virtual start of kernel */
-    uint64_t kernel_end_virt;       /* Virtual end of kernel */
-    uint64_t kernel_heap_start;     /* Start of kernel heap */
-    uint64_t kernel_heap_end;       /* End of kernel heap */
-    uint64_t kernel_stack_start;    /* Start of kernel stack */
-    uint64_t kernel_stack_end;      /* End of kernel stack */
-    uint64_t identity_map_end;      /* End of identity mapping */
-    uint64_t user_space_start;      /* Start of user space */
-    uint64_t user_space_end;        /* End of user space */
-} kernel_memory_layout_t;
+/* Kernel memory layout structure defined in header */
 
 /* Memory region types */
 typedef enum {
@@ -60,7 +47,7 @@ typedef struct {
  * ======================================================================== */
 
 /* Current kernel memory layout */
-static kernel_memory_layout_t kernel_layout = {0};
+static struct kernel_memory_layout kernel_layout = {0};
 
 /* Memory region tracking */
 static memory_region_t memory_regions[MAX_MEMORY_REGIONS];
@@ -177,7 +164,7 @@ void setup_kernel_memory_regions(void) {
  * MEMORY LAYOUT QUERIES
  * ======================================================================== */
 
-const kernel_memory_layout_t *get_kernel_memory_layout(void) {
+const struct kernel_memory_layout *get_kernel_memory_layout(void) {
     if (!layout_initialized) {
         return NULL;
     }
