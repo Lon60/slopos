@@ -19,6 +19,8 @@ static uint32_t test_flags = 0;
 void interrupt_test_init(void) {
     kprintln("INTERRUPT_TEST: Initializing test framework");
 
+    exception_set_mode(EXCEPTION_MODE_TEST);
+
     // Clear test context
     test_ctx.test_active = 0;
     test_ctx.expected_exception = -1;
@@ -38,11 +40,10 @@ void interrupt_test_init(void) {
     // Install our exception handler for testing
     // Skip critical exceptions that should not be overridden
     for (int i = 0; i < 32; i++) {
-        // Don't override double fault (8), machine check (18), or NMI (2)
-        if (i == EXCEPTION_DOUBLE_FAULT || i == EXCEPTION_MACHINE_CHECK || i == EXCEPTION_NMI) {
+        if (exception_is_critical((uint8_t)i)) {
             continue;
         }
-        idt_install_exception_handler(i, test_exception_handler);
+        idt_install_exception_handler((uint8_t)i, test_exception_handler);
     }
 
     kprintln("INTERRUPT_TEST: Framework initialized");
@@ -56,10 +57,12 @@ void interrupt_test_cleanup(void) {
 
     // Remove our exception handlers
     for (int i = 0; i < 32; i++) {
-        idt_install_exception_handler(i, NULL);
+        idt_install_exception_handler((uint8_t)i, NULL);
     }
 
     test_ctx.test_active = 0;
+
+    exception_set_mode(EXCEPTION_MODE_NORMAL);
 }
 
 /*

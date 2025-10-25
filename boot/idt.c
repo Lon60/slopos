@@ -7,12 +7,20 @@
 #include "constants.h"
 #include "../drivers/serial.h"
 
+extern void kernel_panic(const char *message);
+
 // Global IDT and pointer
 static struct idt_entry idt[IDT_ENTRIES];
 static struct idt_ptr idt_pointer;
 
-// Custom exception handlers (can be overridden)
-static exception_handler_t exception_handlers[32] = {0};
+static void initialize_handler_tables(void);
+static void exception_default_panic(struct interrupt_frame *frame);
+static int is_critical_exception_internal(uint8_t vector);
+
+// Exception handler tables
+static exception_handler_t panic_handlers[32] = {0};
+static exception_handler_t override_handlers[32] = {0};
+static enum exception_mode current_exception_mode = EXCEPTION_MODE_NORMAL;
 
 /*
  * Initialize the IDT with default exception handlers
@@ -76,6 +84,8 @@ void idt_init(void) {
     idt_set_gate(46, (uint64_t)irq14, 0x08, IDT_GATE_INTERRUPT); // ATA Primary
     idt_set_gate(47, (uint64_t)irq15, 0x08, IDT_GATE_INTERRUPT); // ATA Secondary
 
+    initialize_handler_tables();
+
     kprint("IDT: Configured ");
     kprint_dec(IDT_ENTRIES);
     kprintln(" interrupt vectors");
@@ -98,12 +108,81 @@ void idt_set_gate(uint8_t vector, uint64_t handler, uint16_t selector, uint8_t t
  * Install a custom exception handler
  */
 void idt_install_exception_handler(uint8_t vector, exception_handler_t handler) {
-    if (vector < 32) {
-        exception_handlers[vector] = handler;
-        kprint("IDT: Installed custom handler for exception ");
+    if (vector >= 32) {
+        kprint("IDT: Ignoring handler install for non-exception vector ");
+        kprint_dec(vector);
+        kprintln("");
+        return;
+    }
+
+    if (handler != NULL && is_critical_exception_internal(vector)) {
+        kprint("IDT: Refusing to override critical exception ");
+        kprint_dec(vector);
+        kprintln("");
+        return;
+    }
+
+    if (override_handlers[vector] == handler) {
+        return;
+    }
+
+    override_handlers[vector] = handler;
+
+    if (handler != NULL) {
+        kprint("IDT: Registered override handler for exception ");
+        kprint_dec(vector);
+        kprintln("");
+    } else {
+        kprint("IDT: Cleared override handler for exception ");
         kprint_dec(vector);
         kprintln("");
     }
+}
+
+static void initialize_handler_tables(void) {
+    for (int i = 0; i < 32; i++) {
+        panic_handlers[i] = exception_default_panic;
+        override_handlers[i] = NULL;
+    }
+
+    panic_handlers[EXCEPTION_DIVIDE_ERROR] = exception_divide_error;
+    panic_handlers[EXCEPTION_DEBUG] = exception_debug;
+    panic_handlers[EXCEPTION_NMI] = exception_nmi;
+    panic_handlers[EXCEPTION_BREAKPOINT] = exception_breakpoint;
+    panic_handlers[EXCEPTION_OVERFLOW] = exception_overflow;
+    panic_handlers[EXCEPTION_BOUND_RANGE] = exception_bound_range;
+    panic_handlers[EXCEPTION_INVALID_OPCODE] = exception_invalid_opcode;
+    panic_handlers[EXCEPTION_DEVICE_NOT_AVAIL] = exception_device_not_available;
+    panic_handlers[EXCEPTION_DOUBLE_FAULT] = exception_double_fault;
+    panic_handlers[EXCEPTION_INVALID_TSS] = exception_invalid_tss;
+    panic_handlers[EXCEPTION_SEGMENT_NOT_PRES] = exception_segment_not_present;
+    panic_handlers[EXCEPTION_STACK_FAULT] = exception_stack_fault;
+    panic_handlers[EXCEPTION_GENERAL_PROTECTION] = exception_general_protection;
+    panic_handlers[EXCEPTION_PAGE_FAULT] = exception_page_fault;
+    panic_handlers[EXCEPTION_FPU_ERROR] = exception_fpu_error;
+    panic_handlers[EXCEPTION_ALIGNMENT_CHECK] = exception_alignment_check;
+    panic_handlers[EXCEPTION_MACHINE_CHECK] = exception_machine_check;
+    panic_handlers[EXCEPTION_SIMD_FP_EXCEPTION] = exception_simd_fp_exception;
+}
+
+static int is_critical_exception_internal(uint8_t vector) {
+    return vector == EXCEPTION_DOUBLE_FAULT ||
+           vector == EXCEPTION_MACHINE_CHECK ||
+           vector == EXCEPTION_NMI;
+}
+
+void exception_set_mode(enum exception_mode mode) {
+    current_exception_mode = mode;
+
+    if (mode == EXCEPTION_MODE_NORMAL) {
+        for (int i = 0; i < 32; i++) {
+            override_handlers[i] = NULL;
+        }
+    }
+}
+
+int exception_is_critical(uint8_t vector) {
+    return is_critical_exception_internal(vector);
 }
 
 /*
@@ -126,81 +205,44 @@ void idt_load(void) {
  * Common exception handler dispatcher
  */
 void common_exception_handler(struct interrupt_frame *frame) {
-    kprint("EXCEPTION: Vector ");
-    kprint_dec(frame->vector);
-    kprint(" (");
-    kprint(get_exception_name(frame->vector));
-    kprintln(")");
+    uint8_t vector = (uint8_t)(frame->vector & 0xFF);
 
-    // Call custom handler if installed
-    if (frame->vector < 32 && exception_handlers[frame->vector] != NULL) {
-        exception_handlers[frame->vector](frame);
+    if (vector >= IRQ_BASE_VECTOR) {
+        kprint("INTERRUPT: Vector ");
+        kprint_dec(vector);
+        kprintln(" (no handler installed)");
         return;
     }
 
-    // Default exception handling
-    switch (frame->vector) {
-        case EXCEPTION_DIVIDE_ERROR:
-            exception_divide_error(frame);
-            break;
-        case EXCEPTION_DEBUG:
-            exception_debug(frame);
-            break;
-        case EXCEPTION_NMI:
-            exception_nmi(frame);
-            break;
-        case EXCEPTION_BREAKPOINT:
-            exception_breakpoint(frame);
-            break;
-        case EXCEPTION_OVERFLOW:
-            exception_overflow(frame);
-            break;
-        case EXCEPTION_BOUND_RANGE:
-            exception_bound_range(frame);
-            break;
-        case EXCEPTION_INVALID_OPCODE:
-            exception_invalid_opcode(frame);
-            break;
-        case EXCEPTION_DEVICE_NOT_AVAIL:
-            exception_device_not_available(frame);
-            break;
-        case EXCEPTION_DOUBLE_FAULT:
-            exception_double_fault(frame);
-            break;
-        case EXCEPTION_INVALID_TSS:
-            exception_invalid_tss(frame);
-            break;
-        case EXCEPTION_SEGMENT_NOT_PRES:
-            exception_segment_not_present(frame);
-            break;
-        case EXCEPTION_STACK_FAULT:
-            exception_stack_fault(frame);
-            break;
-        case EXCEPTION_GENERAL_PROTECTION:
-            exception_general_protection(frame);
-            break;
-        case EXCEPTION_PAGE_FAULT:
-            exception_page_fault(frame);
-            break;
-        case EXCEPTION_FPU_ERROR:
-            exception_fpu_error(frame);
-            break;
-        case EXCEPTION_ALIGNMENT_CHECK:
-            exception_alignment_check(frame);
-            break;
-        case EXCEPTION_MACHINE_CHECK:
-            exception_machine_check(frame);
-            break;
-        case EXCEPTION_SIMD_FP_EXCEPTION:
-            exception_simd_fp_exception(frame);
-            break;
-        default:
-            kprint("EXCEPTION: Unknown exception vector ");
-            kprint_dec(frame->vector);
-            kprintln("");
-            dump_interrupt_frame(frame);
-            break;
+    if (vector >= 32) {
+        kprint("EXCEPTION: Unknown vector ");
+        kprint_dec(vector);
+        kprintln("");
+        exception_default_panic(frame);
+        return;
     }
+
+    int critical = is_critical_exception_internal(vector);
+    if (critical || current_exception_mode != EXCEPTION_MODE_TEST) {
+        kprint("EXCEPTION: Vector ");
+        kprint_dec(vector);
+        kprint(" (");
+        kprint(get_exception_name(vector));
+        kprintln(")");
+    }
+
+    exception_handler_t handler = panic_handlers[vector];
+
+    if (!critical && current_exception_mode == EXCEPTION_MODE_TEST &&
+        override_handlers[vector] != NULL) {
+        handler = override_handlers[vector];
+    }
+
+    if (handler == NULL) {
+        handler = exception_default_panic;
+    }
+
+    handler(frame);
 }
 
 /*
@@ -383,6 +425,12 @@ void dump_cpu_state(void) {
     kprint_hex(rflags);
     kprintln("");
     kprintln("=== END CPU STATE DUMP ===");
+}
+
+static void exception_default_panic(struct interrupt_frame *frame) {
+    kprintln("FATAL: Unhandled exception");
+    dump_interrupt_frame(frame);
+    kernel_panic("Unhandled exception");
 }
 
 /*
