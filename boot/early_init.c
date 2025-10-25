@@ -320,28 +320,3 @@ void report_kernel_status(void) {
         early_debug_string("SlopOS: Kernel status - INITIALIZING\n");
     }
 }
-
-/*
- * Safe kernel shutdown routine
- * Performs cleanup and halts the system safely
- */
-void kernel_shutdown(const char *reason) {
-    // Disable interrupts
-    __asm__ volatile ("cli");
-
-    early_debug_string("SlopOS: Kernel shutdown requested\n");
-    if (reason) {
-        early_debug_string("SlopOS: Shutdown reason: ");
-        early_debug_string(reason);
-        early_debug_string("\n");
-    }
-
-    // TODO: Perform cleanup of kernel resources
-
-    early_debug_string("SlopOS: System halted\n");
-
-    // Halt the system
-    while (1) {
-        __asm__ volatile ("hlt");
-    }
-}

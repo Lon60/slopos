@@ -50,6 +50,7 @@ boot_sources += files(
   'boot/kernel_panic.c',
   'boot/idt.c',
   'boot/debug.c',
+  'boot/shutdown.c',
   'boot/limine_protocol.c'
 )
 

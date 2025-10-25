@@ -5,8 +5,9 @@
  */
 
 #include <stdint.h>
-#include "../drivers/serial.h"
 #include "constants.h"
+#include "shutdown.h"
+#include "../drivers/serial.h"
 
 /*
  * Emergency serial output for panic messages
@@ -96,10 +97,7 @@ void kernel_panic(const char *message) {
     panic_output_string("===================\n");
     panic_output_string("System halted.\n");
 
-    // Halt the system permanently
-    while (1) {
-        __asm__ volatile ("hlt");
-    }
+    kernel_shutdown(message ? message : "panic");
 }
 
 /*
@@ -151,9 +149,7 @@ void kernel_panic_with_context(const char *message, const char *function,
     panic_output_string("===================\n");
     panic_output_string("System halted.\n");
 
-    while (1) {
-        __asm__ volatile ("hlt");
-    }
+    kernel_shutdown(message ? message : "panic");
 }
 
 /*

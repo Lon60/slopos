@@ -502,6 +502,21 @@ void stop_scheduler(void) {
     scheduler.enabled = 0;
 }
 
+/*
+ * Prepare scheduler for shutdown and clear scheduling state
+ */
+void scheduler_shutdown(void) {
+    if (scheduler.enabled) {
+        stop_scheduler();
+    } else {
+        kprint("Scheduler already stopped\n");
+    }
+
+    ready_queue_init(&scheduler.ready_queue);
+    scheduler.current_task = NULL;
+    scheduler.idle_task = NULL;
+}
+
 /* ========================================================================
  * QUERY AND STATISTICS FUNCTIONS
  * ======================================================================== */

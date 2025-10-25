@@ -99,6 +99,14 @@ void debug_print_timestamp(void) {
 }
 
 /*
+ * Ensure all buffered debug output reaches the serial line
+ */
+void debug_flush(void) {
+    uint16_t port = serial_get_kernel_output();
+    serial_flush(port);
+}
+
+/*
  * Print location information
  */
 void debug_print_location(const char *file, int line, const char *function) {

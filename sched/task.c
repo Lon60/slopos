@@ -15,6 +15,7 @@
 /* Forward declarations */
 uint32_t create_process_vm(void);
 int destroy_process_vm(uint32_t process_id);
+int destroy_process_vma_space(uint32_t process_id);
 uint64_t process_vm_alloc(uint32_t process_id, uint64_t size, uint32_t flags);
 int process_vm_free(uint32_t process_id, uint64_t vaddr, uint64_t size);
 void kernel_panic(const char *message);
@@ -233,6 +234,7 @@ int task_terminate(uint32_t task_id) {
     /* Free process VM space */
     if (task->process_id != INVALID_PROCESS_ID) {
         destroy_process_vm(task->process_id);
+        destroy_process_vma_space(task->process_id);
     }
 
     /* Clear task control block */
@@ -247,6 +249,39 @@ int task_terminate(uint32_t task_id) {
     task_manager.tasks_terminated++;
 
     return 0;
+}
+
+/*
+ * Terminate all tasks except the current one
+ * Used during shutdown sequences to release task resources
+ */
+int task_shutdown_all(void) {
+    int result = 0;
+    task_t *current = task_manager.current_task;
+
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        task_t *task = &task_manager.tasks[i];
+
+        if (task->state == TASK_STATE_INVALID) {
+            continue;
+        }
+
+        if (task == current) {
+            continue;
+        }
+
+        if (task->task_id == INVALID_TASK_ID) {
+            continue;
+        }
+
+        if (task_terminate(task->task_id) != 0) {
+            result = -1;
+        }
+    }
+
+    task_manager.num_tasks = 0;
+
+    return result;
 }
 
 /*
