@@ -9,6 +9,7 @@
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
 #include "../boot/limine_protocol.h"
+#include "memory_layout.h"
 
 /* ========================================================================
  * MEMORY LAYOUT CONSTANTS AND STRUCTURES
@@ -176,14 +177,27 @@ void setup_kernel_memory_regions(void) {
  * MEMORY LAYOUT QUERIES
  * ======================================================================== */
 
-/*
- * Get kernel memory layout information
- */
 const kernel_memory_layout_t *get_kernel_memory_layout(void) {
     if (!layout_initialized) {
         return NULL;
     }
     return &kernel_layout;
+}
+
+uint64_t mm_get_kernel_phys_start(void) {
+    return kernel_layout.kernel_start_phys;
+}
+
+uint64_t mm_get_kernel_phys_end(void) {
+    return kernel_layout.kernel_end_phys;
+}
+
+uint64_t mm_get_kernel_virt_start(void) {
+    return kernel_layout.kernel_start_virt;
+}
+
+uint64_t mm_get_identity_map_limit(void) {
+    return kernel_layout.identity_map_end;
 }
 
 /*
@@ -223,32 +237,10 @@ int is_user_address(uint64_t addr) {
     return (addr >= kernel_layout.user_space_start && addr < kernel_layout.user_space_end);
 }
 
-/*
- * Convert physical address to virtual address
- */
-uint64_t phys_to_virt(uint64_t phys_addr) {
-    /* Kernel image physical range maps to higher-half virtual base */
-    if (phys_addr >= kernel_layout.kernel_start_phys &&
-        phys_addr < kernel_layout.kernel_end_phys) {
-        return phys_addr - kernel_layout.kernel_start_phys + kernel_layout.kernel_start_virt;
-    }
+/* ========================================================================
+ * ADDRESS TRANSLATION HELPERS
+ * ======================================================================== */
 
-    /* Prefer higher-half direct map when available */
-    if (is_hhdm_available()) {
-        return phys_addr + get_hhdm_offset();
-    }
-
-    /* Identity mapping established by early boot code */
-    if (phys_addr < kernel_layout.identity_map_end) {
-        return phys_addr;
-    }
-
-    /* Fallback to traditional higher-half offset */
-    return phys_addr + KERNEL_VIRTUAL_BASE;
-}
-
-/* Forward declaration - implemented in paging.c */
-extern uint64_t virt_to_phys(uint64_t virt_addr);
 
 /* ========================================================================
  * MEMORY REGION MANAGEMENT

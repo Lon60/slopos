@@ -11,6 +11,7 @@
 #include "../boot/integration.h"
 #include "kernel_heap.h"
 #include "paging.h"
+#include "phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -214,7 +215,12 @@ uint32_t create_process_vm(void) {
     }
 
     /* Prepare new page table */
-    page_table_t *pml4 = (page_table_t*)pml4_phys;
+    page_table_t *pml4 = (page_table_t *)mm_phys_to_virt(pml4_phys);
+    if (!pml4) {
+        kprint("create_process_vm: No HHDM/identity map available for PML4\n");
+        free_page_frame(pml4_phys);
+        return INVALID_PROCESS_ID;
+    }
     for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
         pml4->entries[i] = 0;
     }

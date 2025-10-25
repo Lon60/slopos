@@ -67,7 +67,8 @@ mm_sources += files(
   'mm/uefi_memory.c',
   'mm/buddy_alloc.c',
   'mm/vmem_regions.c',
-  'mm/memory_init.c'
+  'mm/memory_init.c',
+  'mm/phys_virt.c'
 )
 
 # Video/framebuffer directory

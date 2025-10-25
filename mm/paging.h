@@ -1,3 +1,5 @@
+#include <stdint.h>
+#include <stddef.h>
 /*
  * SlopOS Memory Management - Paging Shared Definitions
  * Exposes paging data structures and helpers across the kernel
@@ -6,8 +8,6 @@
 #ifndef MM_PAGING_H
 #define MM_PAGING_H
 
-#include <stdint.h>
-#include <stddef.h>
 #include "../boot/constants.h"
 
 /* Page table structure - aligned as required by x86_64 */

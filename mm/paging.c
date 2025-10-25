@@ -9,6 +9,8 @@
 #include "../drivers/serial.h"
 #include "paging.h"
 #include "../boot/limine_protocol.h"
+#include "phys_virt.h"
+#include "phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -49,21 +51,8 @@ static process_page_dir_t kernel_page_dir = {
 /* Current active page directory for running process */
 static process_page_dir_t *current_page_dir = &kernel_page_dir;
 
-/* Helper: translate physical address into an accessible kernel pointer */
-static inline uint64_t phys_to_kernel_addr(uint64_t phys_addr) {
-    if (phys_addr == 0) {
-        return 0;
-    }
-
-    if (is_hhdm_available()) {
-        return phys_addr + get_hhdm_offset();
-    }
-
-    return phys_addr;  /* Assume identity mapping is available */
-}
-
 static inline page_table_t *phys_to_page_table_ptr(uint64_t phys_addr) {
-    return (page_table_t *)phys_to_kernel_addr(phys_addr);
+    return (page_table_t *)mm_phys_to_virt(phys_addr);
 }
 
 /* ========================================================================

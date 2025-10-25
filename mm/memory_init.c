@@ -9,6 +9,7 @@
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
 #include "../third_party/limine/limine.h"
+#include "phys_virt.h"
 
 /* Descriptor sizing helpers from allocator implementations */
 size_t page_allocator_descriptor_size(void);
@@ -511,6 +512,8 @@ int init_memory_system(const struct limine_memmap_response *memmap,
         kernel_panic("MM: Failed to size allocator metadata buffers");
         return -1;
     }
+
+    mm_init_phys_virt_helpers();
 
     /* Phase 1: Early paging for basic memory access */
     if (initialize_early_memory() != 0) {
