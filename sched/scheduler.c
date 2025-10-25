@@ -187,16 +187,13 @@ static int ready_queue_remove(ready_queue_t *queue, task_t *task) {
  */
 int schedule_task(task_t *task) {
     if (!task) {
-        kprint("schedule_task: Invalid task pointer\n");
         return -1;
     }
 
     if (ready_queue_enqueue(&scheduler.ready_queue, task) != 0) {
-        kprint("schedule_task: Ready queue full\n");
         return -1;
     }
 
-    kprint("Scheduled task for execution\n");
     return 0;
 }
 
@@ -243,21 +240,10 @@ static task_t *select_next_task(void) {
  */
 static void switch_to_task(task_t *new_task) {
     if (!new_task) {
-        kprint("switch_to_task: Invalid task\n");
         return;
     }
 
     task_t *old_task = scheduler.current_task;
-
-    kprint("Context switch: ");
-    if (old_task) {
-        kprint_decimal(old_task->task_id);
-    } else {
-        kprint("kernel");
-    }
-    kprint(" -> ");
-    kprint_decimal(new_task->task_id);
-    kprint("\n");
 
     /* Update scheduler state */
     scheduler.current_task = new_task;
@@ -269,8 +255,6 @@ static void switch_to_task(task_t *new_task) {
         process_page_dir_t *page_dir = process_vm_get_page_dir(new_task->process_id);
         if (page_dir && page_dir->pml4_phys) {
             new_task->context.cr3 = page_dir->pml4_phys;
-        } else {
-            kprint("switch_to_task: Missing page directory for task\n");
         }
     }
 
@@ -315,7 +299,6 @@ void schedule(void) {
     /* Select next task to run */
     task_t *next_task = select_next_task();
     if (!next_task) {
-        kprint("schedule: No runnable tasks available\n");
         return;
     }
 
@@ -330,15 +313,6 @@ void schedule(void) {
 void yield(void) {
     scheduler.total_yields++;
 
-    kprint("Task yield: ");
-    if (scheduler.current_task) {
-        kprint_decimal(scheduler.current_task->task_id);
-        scheduler.current_task->yield_count++;
-    } else {
-        kprint("kernel");
-    }
-    kprint("\n");
-
     /* Trigger rescheduling */
     schedule();
 }
@@ -351,10 +325,6 @@ void block_current_task(void) {
     if (!current) {
         return;
     }
-
-    kprint("Blocking task ");
-    kprint_decimal(current->task_id);
-    kprint("\n");
 
     /* Mark task as blocked */
     task_set_state(current->task_id, TASK_STATE_BLOCKED);
@@ -372,10 +342,6 @@ int unblock_task(task_t *task) {
         return -1;
     }
 
-    kprint("Unblocking task ");
-    kprint_decimal(task->task_id);
-    kprint("\n");
-
     /* Mark task as ready */
     task_set_state(task->task_id, TASK_STATE_READY);
 
@@ -392,8 +358,6 @@ int unblock_task(task_t *task) {
  */
 static void idle_task_function(void *arg) {
     (void)arg;  /* Unused parameter */
-
-    kprint("Idle task started\n");
 
     while (1) {
         /* Simple idle loop - could implement power management here */
@@ -414,8 +378,6 @@ static void idle_task_function(void *arg) {
  * Initialize the scheduler system
  */
 int init_scheduler(void) {
-    kprint("Initializing cooperative scheduler\n");
-
     /* Initialize ready queue */
     ready_queue_init(&scheduler.ready_queue);
 
@@ -430,7 +392,6 @@ int init_scheduler(void) {
     scheduler.idle_time = 0;
     scheduler.schedule_calls = 0;
 
-    kprint("Scheduler initialized\n");
     return 0;
 }
 
@@ -447,23 +408,16 @@ int create_idle_task(void) {
                                        3, 0x02);  /* Low priority, kernel mode */
 
     if (idle_task_id == INVALID_TASK_ID) {
-        kprint("create_idle_task: Failed to create idle task\n");
         return -1;
     }
 
     /* Get idle task pointer */
     task_t *idle_task;
     if (task_get_info(idle_task_id, &idle_task) != 0) {
-        kprint("create_idle_task: Failed to get idle task info\n");
         return -1;
     }
 
     scheduler.idle_task = idle_task;
-
-    kprint("Idle task created with ID ");
-    kprint_decimal(idle_task_id);
-    kprint("\n");
-
     return 0;
 }
 
@@ -472,11 +426,8 @@ int create_idle_task(void) {
  */
 int start_scheduler(void) {
     if (scheduler.enabled) {
-        kprint("start_scheduler: Scheduler already running\n");
         return -1;
     }
-
-    kprint("Starting cooperative scheduler\n");
 
     scheduler.enabled = 1;
 
@@ -487,7 +438,6 @@ int start_scheduler(void) {
         /* Start with idle task */
         switch_to_task(scheduler.idle_task);
     } else {
-        kprint("start_scheduler: No tasks to run\n");
         return -1;
     }
 
@@ -498,7 +448,6 @@ int start_scheduler(void) {
  * Stop the scheduler
  */
 void stop_scheduler(void) {
-    kprint("Stopping scheduler\n");
     scheduler.enabled = 0;
 }
 
@@ -508,8 +457,6 @@ void stop_scheduler(void) {
 void scheduler_shutdown(void) {
     if (scheduler.enabled) {
         stop_scheduler();
-    } else {
-        kprint("Scheduler already stopped\n");
     }
 
     ready_queue_init(&scheduler.ready_queue);

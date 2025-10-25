@@ -12,6 +12,12 @@
 #include "../mm/paging.h"
 #include "task.h"
 
+/* Process VM allocation flags (mirror mm/process_vm.c definitions) */
+#define PROCESS_VM_FLAG_READ                  0x01
+#define PROCESS_VM_FLAG_WRITE                 0x02
+#define PROCESS_VM_FLAG_EXEC                  0x04
+#define PROCESS_VM_FLAG_USER                  0x08
+
 /* Forward declarations */
 uint32_t create_process_vm(void);
 int destroy_process_vm(uint32_t process_id);
@@ -153,7 +159,9 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
 
     /* Allocate stack for task */
     uint64_t stack_base = process_vm_alloc(process_id, TASK_STACK_SIZE,
-                                          0x02 | 0x08);  /* Write + User */
+                                          PROCESS_VM_FLAG_READ |
+                                          PROCESS_VM_FLAG_WRITE |
+                                          PROCESS_VM_FLAG_USER);
     if (!stack_base) {
         kprint("task_create: Failed to allocate stack\n");
         destroy_process_vm(process_id);
@@ -333,38 +341,26 @@ int task_set_state(uint32_t task_id, uint8_t new_state) {
  * Initialize the task management system
  */
 int init_task_manager(void) {
-    kprint("Initializing task management system\n");
-
-    kprint("Setting num_tasks\n");
-    volatile uint32_t *num_tasks_ptr = &task_manager.num_tasks;
-    *num_tasks_ptr = 0;
-    
-    kprint("Setting next_task_id\n");
-    volatile uint32_t *next_id_ptr = &task_manager.next_task_id;
-    *next_id_ptr = 1;
-    
-    kprint("Setting current_task\n");
+    task_manager.num_tasks = 0;
+    task_manager.next_task_id = 1;
     task_manager.current_task = NULL;
-    
-    kprint("Setting idle_task\n");
     task_manager.idle_task = NULL;
-    
-    kprint("Setting ready_queue pointers\n");
     task_manager.ready_queue_head = NULL;
     task_manager.ready_queue_tail = NULL;
-    
-    /* NOTE: Statistics fields and task array are already zero-initialized
-     * because task_manager is a static global with = {0} initializer.
-     * We skip explicit initialization to avoid compiler-generated instructions
-     * that cause "Invalid Opcode" exceptions. */
+    task_manager.total_context_switches = 0;
+    task_manager.total_yields = 0;
+    task_manager.tasks_created = 0;
+    task_manager.tasks_terminated = 0;
 
-    kprint("Task manager structure ready (fields zero-initialized)\n");
-    
-    /* Skip clearing task array for now - it seems to cause issues
-     * The array is already zero-initialized as a static global */
-    kprint("Skipping task array clearing (already zero-initialized)\n");
+    /* Clear task pool */
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        task_manager.tasks[i].task_id = INVALID_TASK_ID;
+        task_manager.tasks[i].state = TASK_STATE_INVALID;
+        task_manager.tasks[i].process_id = INVALID_PROCESS_ID;
+        task_manager.tasks[i].next = NULL;
+        task_manager.tasks[i].prev = NULL;
+    }
 
-    kprint("Task management system initialized\n");
     return 0;
 }
 
