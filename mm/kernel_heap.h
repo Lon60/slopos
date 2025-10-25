@@ -10,6 +10,7 @@
 
 void *kmalloc(size_t size);
 void kfree(void *ptr);
+void print_heap_stats(void);
+void kernel_heap_enable_diagnostics(int enable);
 
 #endif /* MM_KERNEL_HEAP_H */
-
