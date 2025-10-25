@@ -6,12 +6,34 @@
 #include "interrupt_test.h"
 #include "serial.h"
 #include "../boot/idt.h"
+#include "../boot/constants.h"
+#include "../mm/kernel_heap.h"
+#include "../mm/phys_virt.h"
 #include <stddef.h>
+#include <stdint.h>
+
+/* External paging helpers */
+extern int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
+extern int unmap_page(uint64_t vaddr);
 
 // Global test state
 static struct test_context test_ctx = {0};
 static struct test_stats test_statistics = {0};
 static uint32_t test_flags = 0;
+
+/* Test case descriptor used for suite execution */
+struct interrupt_test_case {
+    test_function_t function;
+    const char *name;
+    int expected_vector;
+};
+
+#define TEST_CASE(fn, vec)      { (fn), #fn, (vec) }
+#define TEST_CASE_NOEX(fn)      { (fn), #fn, -1 }
+
+static int execute_test_suite(const char *suite_name,
+                              const struct interrupt_test_case *cases,
+                              size_t count);
 
 /*
  * Initialize interrupt test framework
@@ -152,6 +174,21 @@ int test_end(void) {
 }
 
 /*
+ * Update expected exception for current test
+ */
+void test_expect_exception(int vector) {
+    if (!test_ctx.test_active) {
+        test_ctx.expected_exception = vector;
+        return;
+    }
+
+    test_ctx.expected_exception = vector;
+    test_ctx.exception_occurred = 0;
+    test_ctx.exception_vector = -1;
+    test_ctx.resume_rip = 0;
+}
+
+/*
  * Test exception handler
  * This handler is called during test execution and must be very careful
  * to avoid causing secondary faults
@@ -202,6 +239,390 @@ int safe_execute_test(test_function_t test_func, const char *test_name, int expe
     test_func();
 
     return test_end();
+}
+
+/*
+ * Execute a suite of tests and report aggregated results
+ */
+static int execute_test_suite(const char *suite_name,
+                              const struct interrupt_test_case *cases,
+                              size_t count) {
+    if (!cases || count == 0) {
+        return 0;
+    }
+
+    if (suite_name && (test_flags & TEST_FLAG_VERBOSE)) {
+        kprint("INTERRUPT_TEST: Running suite '");
+        kprint(suite_name);
+        kprintln("'");
+    }
+
+    int passed = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        int result = safe_execute_test(cases[i].function,
+                                       cases[i].name,
+                                       cases[i].expected_vector);
+        if (result == TEST_SUCCESS || result == TEST_EXCEPTION_CAUGHT) {
+            passed++;
+        } else if (!(test_flags & TEST_FLAG_CONTINUE_ON_FAIL)) {
+            if (suite_name) {
+                kprint("INTERRUPT_TEST: Aborting suite '");
+                kprint(suite_name);
+                kprintln("' due to failure");
+            }
+            break;
+        }
+    }
+
+    if (suite_name && (test_flags & TEST_FLAG_VERBOSE)) {
+        kprint("INTERRUPT_TEST: Suite '");
+        kprint(suite_name);
+        kprint("' - ");
+        kprint_dec(passed);
+        kprint(" / ");
+        kprint_dec((int)count);
+        kprintln(" tests passed");
+    }
+
+    return passed;
+}
+
+/*
+ * Test memory allocation tracking for cleanup
+ */
+struct test_allocation_header {
+    void *raw_ptr;
+    size_t size;
+};
+
+static struct test_allocation_header *get_allocation_header(void *ptr) {
+    if (!ptr) {
+        return NULL;
+    }
+
+    uintptr_t addr = (uintptr_t)ptr;
+    if (addr < sizeof(struct test_allocation_header)) {
+        return NULL;
+    }
+
+    return (struct test_allocation_header*)(addr - sizeof(struct test_allocation_header));
+}
+
+/*
+ * Allocate aligned test memory with optional zeroing
+ */
+void *allocate_test_memory(size_t size, int flags) {
+    if (size == 0) {
+        size = PAGE_SIZE_4KB;
+    }
+
+    size_t aligned_size = (size + PAGE_SIZE_4KB - 1) & ~(PAGE_SIZE_4KB - 1);
+    size_t total_size = aligned_size + PAGE_SIZE_4KB + sizeof(struct test_allocation_header);
+
+    uint8_t *raw = kmalloc(total_size);
+    if (!raw) {
+        kprintln("INTERRUPT_TEST: allocate_test_memory failed");
+        return NULL;
+    }
+
+    uintptr_t base = (uintptr_t)(raw + sizeof(struct test_allocation_header));
+    uintptr_t aligned_addr = (base + PAGE_SIZE_4KB - 1) & ~(PAGE_SIZE_4KB - 1);
+
+    struct test_allocation_header *header =
+        (struct test_allocation_header*)(aligned_addr - sizeof(struct test_allocation_header));
+    header->raw_ptr = raw;
+    header->size = aligned_size;
+
+    if (flags & TEST_MEM_FLAG_ZERO) {
+        uint8_t *buffer = (uint8_t*)aligned_addr;
+        for (size_t i = 0; i < aligned_size; i++) {
+            buffer[i] = 0;
+        }
+    }
+
+    return (void*)aligned_addr;
+}
+
+/*
+ * Free test memory allocation
+ */
+void free_test_memory(void *ptr) {
+    if (!ptr) {
+        return;
+    }
+
+    struct test_allocation_header *header = get_allocation_header(ptr);
+    if (!header || !header->raw_ptr) {
+        return;
+    }
+
+    kfree(header->raw_ptr);
+}
+
+/*
+ * Map a single 4KB test page with specified flags
+ */
+int map_test_memory(uint64_t vaddr, uint64_t paddr, int flags) {
+    if ((vaddr & (PAGE_SIZE_4KB - 1)) || (paddr & (PAGE_SIZE_4KB - 1))) {
+        return -1;
+    }
+    return map_page_4kb(vaddr, paddr, (uint64_t)flags);
+}
+
+/*
+ * Unmap a single 4KB test page
+ */
+int unmap_test_memory(uint64_t vaddr) {
+    if (vaddr & (PAGE_SIZE_4KB - 1)) {
+        return -1;
+    }
+    return unmap_page(vaddr);
+}
+
+/*
+ * Test: Regular kernel memory access (no exception expected)
+ */
+__attribute__((noinline)) int test_kernel_memory_access(void) {
+    uint8_t *buffer = allocate_test_memory(PAGE_SIZE_4KB, TEST_MEM_FLAG_ZERO);
+    if (!buffer) {
+        return TEST_FAILED;
+    }
+
+    for (size_t i = 0; i < 64; i++) {
+        buffer[i] = (uint8_t)(i & 0xFF);
+    }
+
+    volatile uint32_t accumulator = 0;
+    for (size_t i = 0; i < 64; i++) {
+        accumulator += buffer[i];
+    }
+    (void)accumulator;
+
+    free_test_memory(buffer);
+    return TEST_SUCCESS;
+}
+
+/*
+ * Test: Access unmapped memory page (expect page fault)
+ */
+__attribute__((noinline)) int test_unmapped_memory_access(void) {
+    uint8_t *buffer = allocate_test_memory(PAGE_SIZE_4KB, TEST_MEM_FLAG_ZERO);
+    if (!buffer) {
+        return TEST_FAILED;
+    }
+
+    uint64_t phys_addr = mm_virt_to_phys((uint64_t)buffer);
+    if (!phys_addr) {
+        free_test_memory(buffer);
+        return TEST_FAILED;
+    }
+
+    volatile uint64_t resume_addr;
+    __asm__ volatile (
+        "leaq 1f(%%rip), %0\n\t"
+        : "=r"(resume_addr)
+        :
+        : "memory");
+
+    test_ctx.resume_rip = resume_addr;
+
+    int unmapped = 0;
+    int result = TEST_SUCCESS;
+
+    if (unmap_test_memory((uint64_t)buffer) == 0) {
+        unmapped = 1;
+
+        __asm__ volatile (
+            "mov %0, %%rsi\n\t"
+            "movb (%%rsi), %%al\n\t"
+            "1:\n\t"
+            "nop\n\t"
+            :
+            : "r"(buffer)
+            : "rsi", "rax", "memory");
+    } else {
+        result = TEST_FAILED;
+    }
+
+    test_clear_resume_point();
+
+    if (unmapped) {
+        if (map_test_memory((uint64_t)buffer, phys_addr, PAGE_KERNEL_RW) != 0) {
+            result = TEST_FAILED;
+        }
+    }
+
+    free_test_memory(buffer);
+    return result;
+}
+
+/*
+ * Test: Write to read-only mapped page (expect page fault)
+ */
+__attribute__((noinline)) int test_readonly_memory_write(void) {
+    uint8_t *buffer = allocate_test_memory(PAGE_SIZE_4KB, TEST_MEM_FLAG_ZERO);
+    if (!buffer) {
+        return TEST_FAILED;
+    }
+
+    uint64_t phys_addr = mm_virt_to_phys((uint64_t)buffer);
+    if (!phys_addr) {
+        free_test_memory(buffer);
+        return TEST_FAILED;
+    }
+
+    int ro_mapped = 0;
+    int page_unmapped = 0;
+    int result = TEST_SUCCESS;
+
+    if (unmap_test_memory((uint64_t)buffer) == 0) {
+        page_unmapped = 1;
+
+        if (map_test_memory((uint64_t)buffer, phys_addr, PAGE_KERNEL_RO) == 0) {
+            ro_mapped = 1;
+
+            volatile uint64_t resume_addr;
+            __asm__ volatile (
+                "leaq 1f(%%rip), %0\n\t"
+                : "=r"(resume_addr)
+                :
+                : "memory");
+
+            test_ctx.resume_rip = resume_addr;
+
+            __asm__ volatile (
+                "movb $0xAB, (%0)\n\t"
+                "1:\n\t"
+                "nop\n\t"
+                :
+                : "r"(buffer)
+                : "memory");
+
+            test_clear_resume_point();
+        } else {
+            result = TEST_FAILED;
+        }
+    } else {
+        result = TEST_FAILED;
+    }
+
+    if (ro_mapped) {
+        if (unmap_test_memory((uint64_t)buffer) != 0 ||
+            map_test_memory((uint64_t)buffer, phys_addr, PAGE_KERNEL_RW) != 0) {
+            result = TEST_FAILED;
+        }
+    } else if (page_unmapped) {
+        if (map_test_memory((uint64_t)buffer, phys_addr, PAGE_KERNEL_RW) != 0) {
+            result = TEST_FAILED;
+        }
+    }
+
+    free_test_memory(buffer);
+    return result;
+}
+
+/*
+ * Test: Execute code from dynamically allocated memory (no exception expected)
+ */
+__attribute__((noinline)) int test_executable_memory_access(void) {
+    typedef int (*exec_test_func_t)(void);
+
+    uint8_t *buffer = allocate_test_memory(PAGE_SIZE_4KB, TEST_MEM_FLAG_ZERO);
+    if (!buffer) {
+        return TEST_FAILED;
+    }
+
+    buffer[0] = 0xB8;  /* mov eax, 0x42 */
+    buffer[1] = 0x42;
+    buffer[2] = 0x00;
+    buffer[3] = 0x00;
+    buffer[4] = 0x00;
+    buffer[5] = 0xC3;  /* ret */
+
+    exec_test_func_t func = (exec_test_func_t)buffer;
+    volatile int value = func();
+    (void)value;
+
+    free_test_memory(buffer);
+    return TEST_SUCCESS;
+}
+
+/*
+ * Test: Jump to invalid instruction pointer (expect page fault)
+ */
+__attribute__((noinline)) int test_invalid_instruction_pointer(void) {
+    volatile uint64_t resume_addr;
+    __asm__ volatile (
+        "leaq 1f(%%rip), %0\n\t"
+        : "=r"(resume_addr)
+        :
+        : "memory");
+
+    test_ctx.resume_rip = resume_addr;
+
+    __asm__ volatile (
+        "movabs $0xDEADBEEF, %%rax\n\t"
+        "call *%%rax\n\t"
+        "1:\n\t"
+        "nop\n\t"
+        :
+        :
+        : "rax", "memory");
+
+    test_clear_resume_point();
+    return TEST_SUCCESS;
+}
+
+/*
+ * Test: Trigger general protection via explicit software interrupt
+ */
+__attribute__((noinline)) int test_privilege_violation(void) {
+    volatile uint64_t resume_addr;
+    __asm__ volatile (
+        "leaq 1f(%%rip), %0\n\t"
+        : "=r"(resume_addr)
+        :
+        : "memory");
+
+    test_ctx.resume_rip = resume_addr;
+
+    __asm__ volatile (
+        "int $13\n\t"
+        "1:\n\t"
+        "nop\n\t"
+        :
+        :
+        : "memory");
+
+    test_clear_resume_point();
+    return TEST_SUCCESS;
+}
+
+/*
+ * Test: Load invalid segment selector (expect general protection fault)
+ */
+__attribute__((noinline)) int test_segment_violation(void) {
+    volatile uint64_t resume_addr;
+    __asm__ volatile (
+        "leaq 1f(%%rip), %0\n\t"
+        : "=r"(resume_addr)
+        :
+        : "memory");
+
+    test_ctx.resume_rip = resume_addr;
+
+    __asm__ volatile (
+        "movw $0x0000, %%ax\n\t"
+        "movw %%ax, %%fs\n\t"
+        "1:\n\t"
+        "nop\n\t"
+        :
+        :
+        : "rax", "memory");
+
+    test_clear_resume_point();
+    return TEST_SUCCESS;
 }
 
 /*
@@ -403,31 +824,48 @@ __attribute__((noinline)) int test_null_pointer_dereference(void) {
  * Run basic exception tests
  */
 int run_basic_exception_tests(void) {
-    int total_passed = 0;
-    int result;
+    static const struct interrupt_test_case basic_tests[] = {
+        TEST_CASE(test_divide_by_zero, EXCEPTION_DIVIDE_ERROR),
+        TEST_CASE(test_invalid_opcode, EXCEPTION_INVALID_OPCODE),
+        TEST_CASE(test_breakpoint, EXCEPTION_BREAKPOINT),
+    };
 
-    kprintln("INTERRUPT_TEST: Running basic exception tests");
+    size_t count = sizeof(basic_tests) / sizeof(basic_tests[0]);
+    return execute_test_suite("Basic Exceptions", basic_tests, count);
+}
 
-    result = RUN_TEST(test_invalid_opcode, EXCEPTION_INVALID_OPCODE);
-    if (result == TEST_EXCEPTION_CAUGHT) total_passed++;
+/*
+ * Run memory access tests
+ */
+int run_memory_access_tests(void) {
+    static const struct interrupt_test_case memory_tests[] = {
+        TEST_CASE(test_page_fault_read, EXCEPTION_PAGE_FAULT),
+        TEST_CASE(test_page_fault_write, EXCEPTION_PAGE_FAULT),
+        TEST_CASE(test_null_pointer_dereference, EXCEPTION_PAGE_FAULT),
+        TEST_CASE(test_stack_overflow, EXCEPTION_PAGE_FAULT),
+        TEST_CASE_NOEX(test_kernel_memory_access),
+        TEST_CASE(test_unmapped_memory_access, EXCEPTION_PAGE_FAULT),
+        TEST_CASE(test_readonly_memory_write, EXCEPTION_PAGE_FAULT),
+        TEST_CASE_NOEX(test_executable_memory_access),
+    };
 
-    /*result = RUN_TEST(test_breakpoint, EXCEPTION_BREAKPOINT);
-    if (result == TEST_EXCEPTION_CAUGHT) total_passed++;
+    size_t count = sizeof(memory_tests) / sizeof(memory_tests[0]);
+    return execute_test_suite("Memory Access", memory_tests, count);
+}
 
-    result = RUN_TEST(test_page_fault_read, EXCEPTION_PAGE_FAULT);
-    if (result == TEST_EXCEPTION_CAUGHT) total_passed++;
+/*
+ * Run control flow tests
+ */
+int run_control_flow_tests(void) {
+    static const struct interrupt_test_case control_tests[] = {
+        TEST_CASE(test_general_protection_fault, EXCEPTION_GENERAL_PROTECTION),
+        TEST_CASE(test_invalid_instruction_pointer, EXCEPTION_PAGE_FAULT),
+        TEST_CASE(test_privilege_violation, EXCEPTION_GENERAL_PROTECTION),
+        TEST_CASE(test_segment_violation, EXCEPTION_GENERAL_PROTECTION),
+    };
 
-    result = RUN_TEST(test_page_fault_write, EXCEPTION_PAGE_FAULT);
-    if (result == TEST_EXCEPTION_CAUGHT) total_passed++;
-
-    result = RUN_TEST(test_null_pointer_dereference, EXCEPTION_PAGE_FAULT);
-    if (result == TEST_EXCEPTION_CAUGHT) total_passed++;*/
-
-    kprint("INTERRUPT_TEST: Basic tests completed - ");
-    kprint_dec(total_passed);
-    kprint(" passed\n");
-
-    return total_passed;
+    size_t count = sizeof(control_tests) / sizeof(control_tests[0]);
+    return execute_test_suite("Control Flow", control_tests, count);
 }
 
 /*
@@ -436,14 +874,22 @@ int run_basic_exception_tests(void) {
 int run_all_interrupt_tests(void) {
     kprintln("INTERRUPT_TEST: Starting comprehensive interrupt tests");
 
-    // Set verbose mode
-    test_flags |= TEST_FLAG_VERBOSE;
+    test_flags |= TEST_FLAG_VERBOSE | TEST_FLAG_CONTINUE_ON_FAIL;
 
-    int basic_passed = run_basic_exception_tests();
+    int total_passed = 0;
+    total_passed += run_basic_exception_tests();
+    total_passed += run_memory_access_tests();
+    total_passed += run_control_flow_tests();
+
+    if (test_flags & TEST_FLAG_VERBOSE) {
+        kprint("INTERRUPT_TEST: Aggregate passed tests: ");
+        kprint_dec(total_passed);
+        kprintln("");
+    }
 
     test_report_results();
 
-    return basic_passed;
+    return total_passed;
 }
 
 /*

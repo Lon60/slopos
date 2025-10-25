@@ -22,6 +22,9 @@
 #define TEST_FLAG_CONTINUE_ON_FAIL  (1 << 1)
 #define TEST_FLAG_VERBOSE           (1 << 2)
 
+// Test memory allocation flags
+#define TEST_MEM_FLAG_ZERO          (1 << 0)
+
 // Test statistics
 struct test_stats {
     int total_tests;
