@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/idt.h"
+#include "interrupt_test_config.h"
 
 // Test result codes
 #define TEST_SUCCESS            0
@@ -32,6 +33,8 @@ struct test_stats {
     int failed_tests;
     int exceptions_caught;
     int unexpected_exceptions;
+    uint32_t elapsed_ms;
+    int timed_out;
 };
 
 // Test context for exception handling
@@ -68,9 +71,9 @@ int test_privilege_violation(void);
 int test_segment_violation(void);
 
 // Test framework functions
-void interrupt_test_init(void);
+void interrupt_test_init(const struct interrupt_test_config *config);
 void interrupt_test_cleanup(void);
-int run_all_interrupt_tests(void);
+int run_all_interrupt_tests(const struct interrupt_test_config *config);
 int run_basic_exception_tests(void);
 int run_memory_access_tests(void);
 int run_control_flow_tests(void);

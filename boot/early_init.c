@@ -16,10 +16,6 @@
 #include "../drivers/apic.h"
 #include "../drivers/interrupt_test.h"
 
-#ifndef ENABLE_INTERRUPT_TESTS
-#define ENABLE_INTERRUPT_TESTS 0
-#endif
-
 // Forward declarations for other modules
 extern void verify_cpu_state(void);
 extern void verify_memory_layout(void);
@@ -121,15 +117,44 @@ static void initialize_kernel_subsystems(void) {
         early_debug_string("SlopOS: Local APIC unavailable, continuing with PIC\n");
     }
 
-#if ENABLE_INTERRUPT_TESTS
-    early_debug_string("SlopOS: Running interrupt test framework...\n");
-    interrupt_test_init();
-    run_all_interrupt_tests();
-    interrupt_test_cleanup();
-    early_debug_string("SlopOS: Interrupt test framework complete\n");
-#else
-    early_debug_string("SlopOS: Interrupt test framework disabled (config)\n");
-#endif
+    struct interrupt_test_config test_config;
+    interrupt_test_config_init_defaults(&test_config);
+
+    const char *cmdline = get_kernel_cmdline();
+    if (cmdline) {
+        interrupt_test_config_parse_cmdline(&test_config, cmdline);
+    }
+
+    if (test_config.enabled && test_config.suite_mask == 0) {
+        kprintln("INTERRUPT_TEST: No suites selected, skipping execution");
+        test_config.enabled = 0;
+    }
+
+    if (test_config.enabled) {
+        early_debug_string("SlopOS: Running interrupt test framework...\n");
+
+        kprint("INTERRUPT_TEST: Suites -> ");
+        kprintln(interrupt_test_suite_string(test_config.suite_mask));
+
+        kprint("INTERRUPT_TEST: Verbosity -> ");
+        kprintln(interrupt_test_verbosity_string(test_config.verbosity));
+
+        kprint("INTERRUPT_TEST: Timeout (ms) -> ");
+        kprint_dec(test_config.timeout_ms);
+        kprintln("");
+
+        interrupt_test_init(&test_config);
+        int passed = run_all_interrupt_tests(&test_config);
+        interrupt_test_cleanup();
+
+        kprint("INTERRUPT_TEST: Boot run passed tests -> ");
+        kprint_dec(passed);
+        kprintln("");
+
+        early_debug_string("SlopOS: Interrupt test framework complete\n");
+    } else {
+        early_debug_string("SlopOS: Interrupt test framework disabled (config)\n");
+    }
 
     // Mark kernel as initialized
     kernel_initialized = 1;

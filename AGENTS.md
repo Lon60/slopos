@@ -12,6 +12,12 @@ All kernel C code targets C11, built freestanding with `-Wall -Wextra` and no ru
 ## Testing Guidelines
 There are no unit tests yet; rely on QEMU boot verification. Before sending changes, rebuild the ISO and run `scripts/run_qemu_ovmf.sh builddir/slop.iso 15` so the run terminates automatically and logs to `test_output.log`; inspect the log for `SlopOS Kernel Started!` or legacy `KERN` markers plus any warnings. When touching graphics, prefer `scripts/run_qemu_ovmf_video.sh` (with a timeout) to verify the framebuffer visually. Note any observed regressions or warnings in your PR description.
 
+## Interrupt Test Configuration
+- Build defaults come from Meson options: set `-Dinterrupt_tests_default=true` to run during boot, adjust suites with `-Dinterrupt_tests_default_suite={all|basic|memory|control}`, verbosity via `-Dinterrupt_tests_default_verbosity={quiet|summary|verbose}`, and timeout with `-Dinterrupt_tests_default_timeout=<ms>` (0 disables the guard).
+- Runtime overrides are parsed from the Limine command line: use `itests=on|off|basic|memory|control`, `itests.suite=...`, `itests.verbosity=quiet|summary|verbose`, and `itests.timeout=<ms>` (optional `ms` suffix accepted).
+- Boot logs now summarize the active configuration before running tests, and the harness reports total runtime plus whether the timeout fired in `test_output.log`.
+- A timeout stops execution between suites; if you need uninterrupted runs, keep it at 0.
+
 ## Commit & Pull Request Guidelines
 Git history currently lacks structure; standardize on `<area>: <imperative summary>` (e.g., `mm: tighten buddy free path`) and keep subjects ≤72 chars. Add a body when explaining rationale, boot implications, or follow-ups. For PRs, include: brief motivation, testing artifacts (command + result), references to issues, and screenshots or serial excerpts when altering visible output or boot flow. Flag breaking changes and call out coordination needs with downstream scripts.
 

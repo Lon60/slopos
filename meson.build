@@ -10,6 +10,16 @@ project('slopos', 'c',
   ]
 )
 
+interrupt_tests_default_enabled_opt = get_option('interrupt_tests_default')
+interrupt_tests_default_suite_opt = get_option('interrupt_tests_default_suite')
+interrupt_tests_default_timeout_opt = get_option('interrupt_tests_default_timeout')
+interrupt_tests_default_verbosity_opt = get_option('interrupt_tests_default_verbosity')
+
+interrupt_tests_default_enabled_define = interrupt_tests_default_enabled_opt ? '1' : '0'
+interrupt_tests_default_suite_define = '"' + interrupt_tests_default_suite_opt + '"'
+interrupt_tests_default_verbosity_define = '"' + interrupt_tests_default_verbosity_opt + '"'
+interrupt_tests_default_timeout_define = interrupt_tests_default_timeout_opt.to_string()
+
 add_project_arguments([
     '-ffreestanding',
     '-fno-stack-protector',
@@ -27,7 +37,11 @@ add_project_arguments([
     '-msoft-float',
     '-Wall',
     '-Wextra',
-    '-Wno-unused-parameter'
+    '-Wno-unused-parameter',
+    '-DINTERRUPT_TESTS_DEFAULT_ENABLED=' + interrupt_tests_default_enabled_define,
+    '-DINTERRUPT_TESTS_DEFAULT_SUITE=' + interrupt_tests_default_suite_define,
+    '-DINTERRUPT_TESTS_DEFAULT_TIMEOUT_MS=' + interrupt_tests_default_timeout_define,
+    '-DINTERRUPT_TESTS_DEFAULT_VERBOSITY=' + interrupt_tests_default_verbosity_define
   ],
   language: 'c')
 
@@ -94,6 +108,7 @@ drivers_sources += files(
   'drivers/pic.c',
   'drivers/apic.c',
   'drivers/interrupt_test.c',
+  'drivers/interrupt_test_config.c',
   'drivers/exceptions.s',
   'drivers/exception_handlers.c'
 )

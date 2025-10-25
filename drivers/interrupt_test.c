@@ -5,6 +5,7 @@
 
 #include "interrupt_test.h"
 #include "serial.h"
+#include "apic.h"
 #include "../boot/idt.h"
 #include "../boot/constants.h"
 #include "../mm/kernel_heap.h"
@@ -20,6 +21,86 @@ extern int unmap_page(uint64_t vaddr);
 static struct test_context test_ctx = {0};
 static struct test_stats test_statistics = {0};
 static uint32_t test_flags = 0;
+static struct interrupt_test_config active_config = {
+    .enabled = 0,
+    .verbosity = INTERRUPT_TEST_VERBOSITY_SUMMARY,
+    .suite_mask = INTERRUPT_TEST_SUITE_ALL,
+    .timeout_ms = 0,
+};
+static uint64_t estimated_cycles_per_ms = 0;
+static uint64_t test_timeout_cycles = 0;
+
+static uint64_t read_tsc(void) {
+    uint32_t low = 0;
+    uint32_t high = 0;
+    __asm__ volatile ("rdtsc" : "=a"(low), "=d"(high));
+    return ((uint64_t)high << 32) | (uint64_t)low;
+}
+
+static uint64_t estimate_cycles_per_ms(void) {
+    uint32_t eax = 0;
+    uint32_t ebx = 0;
+    uint32_t ecx = 0;
+    uint32_t edx = 0;
+
+    cpuid(0, &eax, &ebx, &ecx, &edx);
+    if (eax >= 0x16) {
+        cpuid(0x16, &eax, &ebx, &ecx, &edx);
+        if (eax != 0) {
+            return (uint64_t)eax * 1000ULL;
+        }
+    }
+
+    /* Fallback assumption: 3 GHz base frequency */
+    return 3000000ULL;
+}
+
+static void refresh_timeout_cache(void) {
+    if (active_config.timeout_ms == 0) {
+        test_timeout_cycles = 0;
+        return;
+    }
+
+    if (estimated_cycles_per_ms == 0) {
+        estimated_cycles_per_ms = estimate_cycles_per_ms();
+        if (estimated_cycles_per_ms == 0) {
+            estimated_cycles_per_ms = 3000000ULL;
+        }
+    }
+
+    test_timeout_cycles = estimated_cycles_per_ms * (uint64_t)active_config.timeout_ms;
+    if (test_timeout_cycles == 0) {
+        /* Prevent zero timeout due to overflow */
+        test_timeout_cycles = (uint64_t)active_config.timeout_ms * 3000000ULL;
+    }
+}
+
+static uint64_t cycles_to_ms(uint64_t cycles) {
+    if (estimated_cycles_per_ms == 0) {
+        return 0;
+    }
+    return cycles / estimated_cycles_per_ms;
+}
+
+static void interrupt_test_apply_config(const struct interrupt_test_config *config) {
+    if (config) {
+        active_config = *config;
+    } else {
+        active_config.enabled = 1;
+        active_config.verbosity = INTERRUPT_TEST_VERBOSITY_VERBOSE;
+        active_config.suite_mask = INTERRUPT_TEST_SUITE_ALL;
+        active_config.timeout_ms = 0;
+    }
+
+    test_flags = TEST_FLAG_CONTINUE_ON_FAIL;
+    if (active_config.verbosity == INTERRUPT_TEST_VERBOSITY_VERBOSE) {
+        test_flags |= TEST_FLAG_VERBOSE;
+    } else {
+        test_flags &= ~TEST_FLAG_VERBOSE;
+    }
+
+    refresh_timeout_cache();
+}
 
 /* Test case descriptor used for suite execution */
 struct interrupt_test_case {
@@ -38,8 +119,12 @@ static int execute_test_suite(const char *suite_name,
 /*
  * Initialize interrupt test framework
  */
-void interrupt_test_init(void) {
-    kprintln("INTERRUPT_TEST: Initializing test framework");
+void interrupt_test_init(const struct interrupt_test_config *config) {
+    interrupt_test_apply_config(config);
+
+    if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+        kprintln("INTERRUPT_TEST: Initializing test framework");
+    }
 
     exception_set_mode(EXCEPTION_MODE_TEST);
 
@@ -58,6 +143,8 @@ void interrupt_test_init(void) {
     test_statistics.failed_tests = 0;
     test_statistics.exceptions_caught = 0;
     test_statistics.unexpected_exceptions = 0;
+    test_statistics.elapsed_ms = 0;
+    test_statistics.timed_out = 0;
 
     // Install our exception handler for testing
     // Skip critical exceptions that should not be overridden
@@ -68,14 +155,18 @@ void interrupt_test_init(void) {
         idt_install_exception_handler((uint8_t)i, test_exception_handler);
     }
 
-    kprintln("INTERRUPT_TEST: Framework initialized");
+    if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+        kprintln("INTERRUPT_TEST: Framework initialized");
+    }
 }
 
 /*
  * Cleanup interrupt test framework
  */
 void interrupt_test_cleanup(void) {
-    kprintln("INTERRUPT_TEST: Cleaning up test framework");
+    if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+        kprintln("INTERRUPT_TEST: Cleaning up test framework");
+    }
 
     // Remove our exception handlers
     for (int i = 0; i < 32; i++) {
@@ -85,6 +176,10 @@ void interrupt_test_cleanup(void) {
     test_ctx.test_active = 0;
 
     exception_set_mode(EXCEPTION_MODE_NORMAL);
+
+    if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+        kprintln("INTERRUPT_TEST: Framework cleanup complete");
+    }
 }
 
 /*
@@ -871,20 +966,84 @@ int run_control_flow_tests(void) {
 /*
  * Run all interrupt tests
  */
-int run_all_interrupt_tests(void) {
-    kprintln("INTERRUPT_TEST: Starting comprehensive interrupt tests");
+int run_all_interrupt_tests(const struct interrupt_test_config *config) {
+    interrupt_test_apply_config(config);
 
-    test_flags |= TEST_FLAG_VERBOSE | TEST_FLAG_CONTINUE_ON_FAIL;
+    if (!active_config.enabled) {
+        kprintln("INTERRUPT_TEST: Skipping interrupt tests (disabled)");
+        return 0;
+    }
+
+    if (estimated_cycles_per_ms == 0) {
+        estimated_cycles_per_ms = estimate_cycles_per_ms();
+        if (estimated_cycles_per_ms == 0) {
+            estimated_cycles_per_ms = 3000000ULL;
+        }
+    }
+
+    if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+        kprintln("INTERRUPT_TEST: Starting interrupt test suites");
+    }
 
     int total_passed = 0;
-    total_passed += run_basic_exception_tests();
-    total_passed += run_memory_access_tests();
-    total_passed += run_control_flow_tests();
+    int timed_out = 0;
+    uint64_t start_cycles = read_tsc();
+    uint64_t end_cycles = start_cycles;
 
+    if (active_config.suite_mask & INTERRUPT_TEST_SUITE_BASIC) {
+        total_passed += run_basic_exception_tests();
+        end_cycles = read_tsc();
+        if (test_timeout_cycles != 0 &&
+            (end_cycles - start_cycles) > test_timeout_cycles) {
+            timed_out = 1;
+            if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+                kprintln("INTERRUPT_TEST: Timeout reached during basic exception tests");
+            }
+            goto finish_execution;
+        }
+    }
+    if (active_config.suite_mask & INTERRUPT_TEST_SUITE_MEMORY) {
+        total_passed += run_memory_access_tests();
+        end_cycles = read_tsc();
+        if (test_timeout_cycles != 0 &&
+            (end_cycles - start_cycles) > test_timeout_cycles) {
+            timed_out = 1;
+            if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+                kprintln("INTERRUPT_TEST: Timeout reached during memory access tests");
+            }
+            goto finish_execution;
+        }
+    }
+    if (active_config.suite_mask & INTERRUPT_TEST_SUITE_CONTROL) {
+        total_passed += run_control_flow_tests();
+        end_cycles = read_tsc();
+        if (test_timeout_cycles != 0 &&
+            (end_cycles - start_cycles) > test_timeout_cycles) {
+            timed_out = 1;
+            if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+                kprintln("INTERRUPT_TEST: Timeout reached during control flow tests");
+            }
+            goto finish_execution;
+        }
+    }
+
+finish_execution:
     if (test_flags & TEST_FLAG_VERBOSE) {
         kprint("INTERRUPT_TEST: Aggregate passed tests: ");
         kprint_dec(total_passed);
         kprintln("");
+    }
+
+    uint64_t elapsed_cycles = end_cycles - start_cycles;
+    uint64_t elapsed_ms = cycles_to_ms(elapsed_cycles);
+    if (elapsed_ms > 0xFFFFFFFFULL) {
+        elapsed_ms = 0xFFFFFFFFULL;
+    }
+    test_statistics.elapsed_ms = (uint32_t)elapsed_ms;
+    test_statistics.timed_out = timed_out;
+
+    if (timed_out) {
+        kprintln("INTERRUPT_TEST: Execution aborted due to timeout");
     }
 
     test_report_results();
@@ -945,6 +1104,13 @@ void test_report_results(void) {
         kprint_dec(success_rate);
         kprintln("%");
     }
+
+    kprint("Elapsed (ms): ");
+    kprint_dec(test_statistics.elapsed_ms);
+    kprintln("");
+
+    kprint("Timeout triggered: ");
+    kprintln(test_statistics.timed_out ? "Yes" : "No");
 
     kprintln("=== END TEST RESULTS ===");
 }

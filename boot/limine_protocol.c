@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "limine_protocol.h"
+#include "constants.h"
 #include "../drivers/serial.h"
 
 /* ========================================================================
@@ -64,6 +65,14 @@ static volatile struct limine_kernel_address_request kernel_address_request = {
     .response = NULL
 };
 
+/* Request kernel file for command line access */
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_kernel_file_request kernel_file_request = {
+    .id = LIMINE_KERNEL_FILE_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
 /* Mark end of requests */
 __attribute__((used, section(".limine_requests_end_marker")))
 static volatile uint64_t limine_requests_end_marker[1] = {0};
@@ -86,6 +95,8 @@ static struct {
     int framebuffer_available;
     int memory_map_available;
     int hhdm_available;
+    int kernel_cmdline_available;
+    char kernel_cmdline[BOOT_CMDLINE_MAX_LEN];
 } system_info = {0};
 
 /* ========================================================================
@@ -145,6 +156,35 @@ int init_limine_protocol(void) {
         kprint("Kernel virtual base: ");
         kprint_hex(ka->virtual_base);
         kprintln("");
+    }
+
+    /* Parse kernel command line */
+    if (kernel_file_request.response != NULL) {
+        struct limine_kernel_file_response *kf =
+            (struct limine_kernel_file_response *)kernel_file_request.response;
+
+        if (kf->kernel_file && kf->kernel_file->cmdline) {
+            const char *cmdline = (const char *)kf->kernel_file->cmdline;
+            size_t index = 0;
+
+            while (cmdline[index] != '\0' && index < (BOOT_CMDLINE_MAX_LEN - 1)) {
+                system_info.kernel_cmdline[index] = cmdline[index];
+                index++;
+            }
+            system_info.kernel_cmdline[index] = '\0';
+            system_info.kernel_cmdline_available = 1;
+
+            if (index > 0) {
+                kprint("Kernel command line: ");
+                kprintln(system_info.kernel_cmdline);
+            } else {
+                kprintln("Kernel command line: <empty>");
+            }
+        } else {
+            kprintln("Kernel command line: <not provided>");
+        }
+    } else {
+        kprintln("Kernel command line request unavailable");
     }
 
     /* Parse memory map */
@@ -303,6 +343,13 @@ uint64_t get_kernel_phys_base(void) {
  */
 uint64_t get_kernel_virt_base(void) {
     return system_info.kernel_virt_base;
+}
+
+const char *get_kernel_cmdline(void) {
+    if (!system_info.kernel_cmdline_available) {
+        return NULL;
+    }
+    return system_info.kernel_cmdline;
 }
 
 const struct limine_memmap_response *limine_get_memmap_response(void) {
