@@ -38,6 +38,7 @@ struct test_context {
     int exception_occurred;
     int exception_vector;
     uint64_t test_rip;
+    volatile uint64_t resume_rip;
     struct interrupt_frame *last_frame;
     char test_name[64];
 };
@@ -77,6 +78,8 @@ int test_end(void);
 void test_expect_exception(int vector);
 void test_set_flags(uint32_t flags);
 int test_is_exception_expected(void);
+void test_set_resume_point(void *rip);
+void test_clear_resume_point(void);
 void test_report_results(void);
 struct test_stats *test_get_stats(void);
 

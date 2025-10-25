@@ -13,6 +13,10 @@
 #include "../drivers/apic.h"
 #include "../drivers/interrupt_test.h"
 
+#ifndef ENABLE_INTERRUPT_TESTS
+#define ENABLE_INTERRUPT_TESTS 0
+#endif
+
 // Forward declarations for other modules
 extern void verify_cpu_state(void);
 extern void verify_memory_layout(void);
@@ -117,9 +121,15 @@ static void initialize_kernel_subsystems(void) {
         early_debug_string("SlopOS: Local APIC unavailable, continuing with PIC\n");
     }
 
-    // Skip interrupt test framework for now - we'll add proper testing later
-    // TODO: Re-enable interrupt testing after full boot is working
-    early_debug_string("SlopOS: Interrupt test framework skipped for initial boot\n");
+#if ENABLE_INTERRUPT_TESTS
+    early_debug_string("SlopOS: Running interrupt test framework...\n");
+    interrupt_test_init();
+    run_all_interrupt_tests();
+    interrupt_test_cleanup();
+    early_debug_string("SlopOS: Interrupt test framework complete\n");
+#else
+    early_debug_string("SlopOS: Interrupt test framework disabled (config)\n");
+#endif
 
     // Mark kernel as initialized
     kernel_initialized = 1;
