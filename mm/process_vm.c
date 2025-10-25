@@ -17,6 +17,8 @@
 void kernel_panic(const char *message);
 uint64_t alloc_page_frame(uint32_t flags);
 int free_page_frame(uint64_t phys_addr);
+int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
+int unmap_page(uint64_t vaddr);
 
 /* ========================================================================
  * PROCESS VIRTUAL MEMORY CONSTANTS
@@ -111,6 +113,68 @@ static void free_vma(vm_area_t *vma) {
     if (!vma) return;
 
     kfree(vma);
+}
+
+static int map_user_range(uint64_t start_addr, uint64_t end_addr, uint64_t map_flags, uint32_t *pages_mapped_out) {
+    if (start_addr & (PAGE_SIZE_4KB - 1) || end_addr & (PAGE_SIZE_4KB - 1) || end_addr <= start_addr) {
+        kprint("map_user_range: Unaligned or invalid range\n");
+        return -1;
+    }
+
+    uint64_t current = start_addr;
+    uint32_t mapped = 0;
+
+    while (current < end_addr) {
+        uint64_t phys = alloc_page_frame(0);
+        if (!phys) {
+            kprint("map_user_range: Physical allocation failed\n");
+            goto rollback;
+        }
+
+        if (map_page_4kb(current, phys, map_flags) != 0) {
+            kprint("map_user_range: Virtual mapping failed\n");
+            free_page_frame(phys);
+            goto rollback;
+        }
+
+        mapped++;
+        current += PAGE_SIZE_4KB;
+    }
+
+    if (pages_mapped_out) {
+        *pages_mapped_out = mapped;
+    }
+    return 0;
+
+rollback:
+    while (mapped > 0) {
+        current -= PAGE_SIZE_4KB;
+        uint64_t phys = mm_virt_to_phys(current);
+        if (phys) {
+            unmap_page(current);
+            free_page_frame(phys);
+        }
+        mapped--;
+    }
+
+    if (pages_mapped_out) {
+        *pages_mapped_out = 0;
+    }
+    return -1;
+}
+
+static void unmap_user_range(uint64_t start_addr, uint64_t end_addr) {
+    if (end_addr <= start_addr) {
+        return;
+    }
+
+    for (uint64_t addr = start_addr; addr < end_addr; addr += PAGE_SIZE_4KB) {
+        uint64_t phys = mm_virt_to_phys(addr);
+        if (phys) {
+            unmap_page(addr);
+            free_page_frame(phys);
+        }
+    }
 }
 
 /*
@@ -268,6 +332,21 @@ uint32_t create_process_vm(void) {
     add_vma_to_process(process, process->stack_start, process->stack_end,
                        VM_FLAG_READ | VM_FLAG_WRITE | VM_FLAG_USER);
 
+    /* Map initial stack pages eagerly */
+    uint64_t stack_map_flags = PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE;
+    uint32_t stack_pages = 0;
+    if (map_user_range(process->stack_start, process->stack_end, stack_map_flags, &stack_pages) != 0) {
+        kprint("create_process_vm: Failed to map process stack\n");
+        unmap_user_range(process->stack_start, process->stack_end);
+        free_page_frame(process->page_dir->pml4_phys);
+        kfree(process->page_dir);
+        process->page_dir = NULL;
+        process->process_id = INVALID_PROCESS_ID;
+        return INVALID_PROCESS_ID;
+    }
+
+    process->total_pages += stack_pages;
+
     /* Add to global list */
     vm_manager.process_list = process;
     vm_manager.num_processes++;
@@ -297,6 +376,9 @@ int destroy_process_vm(uint32_t process_id) {
     /* Free all VMAs */
     vm_area_t *vma = process->vma_list;
     while (vma) {
+        if (vma->flags & VM_FLAG_USER) {
+            unmap_user_range(vma->start_addr, vma->end_addr);
+        }
         vm_area_t *next = vma->next;
         free_vma(vma);
         vma = next;
@@ -360,15 +442,32 @@ uint64_t process_vm_alloc(uint32_t process_id, uint64_t size, uint32_t flags) {
         return 0;
     }
 
-    /* Update heap end */
-    process->heap_end = end_addr;
+    uint32_t protection_flags = flags & (VM_FLAG_READ | VM_FLAG_WRITE | VM_FLAG_EXEC);
 
-    /* Add VMA for this allocation */
-    if (add_vma_to_process(process, start_addr, end_addr, flags) != 0) {
-        process->heap_end = start_addr;  /* Rollback */
+    if (protection_flags == 0) {
+        protection_flags = VM_FLAG_READ | VM_FLAG_WRITE;
+    }
+
+    uint64_t map_flags = PAGE_PRESENT | PAGE_USER;
+    if (protection_flags & VM_FLAG_WRITE) {
+        map_flags |= PAGE_WRITABLE;
+    }
+
+    uint32_t pages_mapped = 0;
+    if (map_user_range(start_addr, end_addr, map_flags, &pages_mapped) != 0) {
         return 0;
     }
 
+    process->heap_end = end_addr;
+
+    if (add_vma_to_process(process, start_addr, end_addr, protection_flags | VM_FLAG_USER) != 0) {
+        kprint("process_vm_alloc: Failed to record VMA\n");
+        unmap_user_range(start_addr, end_addr);
+        process->heap_end = start_addr;
+        return 0;
+    }
+
+    process->total_pages += pages_mapped;
     return start_addr;
 }
 
