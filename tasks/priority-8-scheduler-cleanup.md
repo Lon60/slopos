@@ -1,4 +1,4 @@
-# Priority 4 — Finalize Scheduler Termination & Diagnostic Hooks
+# Priority 8 — Finalize Scheduler Termination & Diagnostic Hooks
 
 ## Summary
 Tighten the cooperative scheduler so tasks that return are properly terminated, statistics are accurate, and debugging hooks (stack traces, timestamps) are usable without halting the system.
@@ -14,11 +14,6 @@ Tighten the cooperative scheduler so tasks that return are properly terminated, 
 - Extend stack trace support in `drivers/exception_handlers.c` to walk multiple frames while preventing double faults (e.g., via guard checks or temporary IST stack).
 - Replace the placeholder timestamp counter in `boot/debug.c` with a real-time source (PIT tick accumulator or APIC timer) so scheduler metrics are meaningful.
 - Update scheduler statistics reporting and add docs on interpreting them.
-
-## Dependencies & Follow-ups
-- Depends on Priority 3 to deliver reliable timer interrupts if the timestamp/tick source uses IRQ0.
-- Enables broader work on task lifecycle management, idle task behaviour, and eventually preemption.
-- Follow-up could integrate scheduler metrics into the interrupt test harness or boot logs.
 
 ## Acceptance Criteria
 - Tasks that return no longer hang the CPU; they cleanly terminate and release their resources.

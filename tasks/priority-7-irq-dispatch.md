@@ -1,4 +1,4 @@
-# Priority 3 — Implement Real IRQ Dispatch & Device Routing
+# Priority 7 — Implement Real IRQ Dispatch & Device Routing
 
 ## Summary
 Replace the `common_interrupt_handler` default in `drivers/exceptions.s` and related stubs with a proper interrupt dispatch pipeline that hands hardware IRQs to registered device handlers.
@@ -14,11 +14,6 @@ Replace the `common_interrupt_handler` default in `drivers/exceptions.s` and rel
 - Implement masking/unmasking helpers that interact with existing PIC/APIC code, including acknowledgement (EOI) flow.
 - Provide initial handlers for the programmable interval timer and keyboard IRQs as reference implementations.
 - Add diagnostics to log unhandled IRQs once (rate-limited) to avoid flooding serial output.
-
-## Dependencies & Follow-ups
-- Depends on Priority 2: need reliable exception handling to diagnose early routing issues.
-- Enables Priority 4 scheduler work by making periodic timer ticks available.
-- Follow-up tasks may hook the dispatcher into APIC mode, SMP support, and deferred procedure calls.
 
 ## Acceptance Criteria
 - IRQ0 (timer) and IRQ1 (keyboard) are serviced by dedicated handlers and confirmed via serial log or counters.

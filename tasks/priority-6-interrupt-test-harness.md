@@ -1,4 +1,4 @@
-# Priority 2 — Stabilize Interrupt Test Harness & Exception Recovery
+# Priority 6 — Stabilize Interrupt Test Harness & Exception Recovery
 
 ## Summary
 Re-enable and harden the SlopOS interrupt test framework so it can execute controlled exceptions without triggering triple faults or halting the kernel.
@@ -14,11 +14,6 @@ Re-enable and harden the SlopOS interrupt test framework so it can execute contr
 - Add guardrails to avoid double-faults (e.g., ensure stack usage is bounded, use dedicated IST stack if necessary).
 - Introduce a configuration mechanism to run the suite during boot with a timeout and result summary in `test_output.log`.
 - Update documentation (README or inline comments) describing how to enable tests, expected output, and manual invocation steps.
-
-## Dependencies & Follow-ups
-- Depends on Priority 1 allocator improvements if the harness allocates contiguous scratch pages.
-- Enables Priority 3 work by providing known-good exception behaviour for IRQ testing.
-- Optional follow-up: integrate with CI/QEMU scripts once tests are stable.
 
 ## Acceptance Criteria
 - Boot with `ENABLE_INTERRUPT_TESTS=1` completes without triple faulting or hanging, printing a concise pass/fail report.
