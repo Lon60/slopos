@@ -8,17 +8,18 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../third_party/limine/limine.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
 
 /* Memory subsystem initialization functions */
-int init_early_paging(void);
 void init_kernel_memory_layout(void);
-void parse_multiboot2_info_strict(uint64_t multiboot_info_addr);
-int parse_efi_memory_map_mb2(const void *mboot_info, uint32_t mboot_size);
 int init_page_allocator(void *frame_array, uint32_t max_frames);
+int finalize_page_allocator(void);
+int add_page_alloc_region(uint64_t start_addr, uint64_t size, uint8_t type);
 int init_buddy_allocator(void *block_array, uint32_t max_blocks);
+int buddy_add_zone(uint64_t start_addr, uint64_t size, uint8_t zone_type);
 int init_kernel_heap(void);
 int init_process_vm(void);
 int init_vmem_regions(void);
@@ -31,8 +32,8 @@ void init_paging(void);
 typedef struct memory_init_state {
     int early_paging_done;
     int memory_layout_done;
-    int multiboot_parsed;
-    int efi_memory_parsed;
+    int limine_memmap_parsed;
+    int hhdm_received;
     int page_allocator_done;
     int buddy_allocator_done;
     int kernel_heap_done;
@@ -42,6 +43,7 @@ typedef struct memory_init_state {
     uint64_t total_memory_bytes;
     uint64_t available_memory_bytes;
     uint32_t memory_regions_count;
+    uint64_t hhdm_offset;
 } memory_init_state_t;
 
 static memory_init_state_t init_state = {0};
@@ -69,38 +71,77 @@ static uint8_t buddy_block_array[MAX_BUDDY_BLOCKS * 64] __attribute__((aligned(1
  * Must be called first before any other memory operations
  */
 static int initialize_early_memory(void) {
-    kprint("MM: Initializing early paging structures...\n");
-
-    if (init_early_paging() != 0) {
-        kernel_panic("MM: Early paging initialization failed");
-        return -1;
-    }
-
+    kprint("MM: Skipping early paging reinitialization (already configured by bootloader)\n");
     init_state.early_paging_done = 1;
-    kprint("MM: Early paging structures initialized successfully\n");
     return 0;
 }
 
 /**
- * Parse Multiboot2 information and EFI memory map
+ * Consume Limine memory map and HHDM information
  * Discovers available physical memory regions
  */
-static int initialize_memory_discovery(uint64_t multiboot_info_addr) {
-    kprint("MM: Parsing Multiboot2 information...\n");
+static int initialize_memory_discovery(const struct limine_memmap_response *memmap,
+                                       uint64_t hhdm_offset) {
+    kprint("MM: Processing Limine memory map...\n");
 
-    /* Parse Multiboot2 structure with strict validation */
-    parse_multiboot2_info_strict(multiboot_info_addr);
-    init_state.multiboot_parsed = 1;
+    init_state.total_memory_bytes = 0;
+    init_state.available_memory_bytes = 0;
+    init_state.memory_regions_count = 0;
 
-    /* Parse EFI memory map from Multiboot2 */
-    kprint("MM: Parsing EFI memory map...\n");
-    if (parse_efi_memory_map_mb2((const void *)multiboot_info_addr,
-                                 0x8000) != 0) {  /* Reasonable size limit */
-        kernel_panic("MM: EFI memory map parsing failed");
+    if (!memmap || memmap->entry_count == 0 || !memmap->entries) {
+        kprint("MM: ERROR - Limine memory map response missing\n");
         return -1;
     }
 
-    init_state.efi_memory_parsed = 1;
+    kprint("MM: Limine memory entries: ");
+    kprint_decimal(memmap->entry_count);
+    kprint("\n");
+
+    int processed_entries = 0;
+
+    for (uint64_t i = 0; i < memmap->entry_count; i++) {
+        const struct limine_memmap_entry *entry = memmap->entries[i];
+
+        if (!entry || entry->length == 0) {
+            continue;
+        }
+
+        processed_entries++;
+        init_state.memory_regions_count++;
+        init_state.total_memory_bytes += entry->length;
+
+        if (entry->type == LIMINE_MEMMAP_USABLE) {
+            init_state.available_memory_bytes += entry->length;
+
+            if (add_page_alloc_region(entry->base, entry->length,
+                                      EFI_CONVENTIONAL_MEMORY) != 0) {
+                kprint("MM: WARNING - failed to register page allocator region\n");
+            }
+
+            if (buddy_add_zone(entry->base, entry->length,
+                               EFI_CONVENTIONAL_MEMORY) != 0) {
+                kprint("MM: WARNING - failed to register buddy allocator zone\n");
+            }
+        }
+    }
+
+    if (processed_entries == 0) {
+        kprint("MM: ERROR - Limine memory map contained no valid entries\n");
+        return -1;
+    }
+
+    init_state.limine_memmap_parsed = 1;
+    init_state.hhdm_offset = hhdm_offset;
+    init_state.hhdm_received = 1;
+
+    kprint("MM: HHDM offset: 0x");
+    kprint_hex(hhdm_offset);
+    kprint("\n");
+
+    if (finalize_page_allocator() != 0) {
+        kprint("MM: WARNING - page allocator finalization reported issues\n");
+    }
+
     kprint("MM: Memory discovery completed successfully\n");
     return 0;
 }
@@ -141,16 +182,16 @@ static int initialize_virtual_memory(void) {
     init_kernel_memory_layout();
     init_state.memory_layout_done = 1;
 
+    /* Initialize full paging system */
+    init_paging();
+    init_state.paging_done = 1;
+
     /* Initialize kernel heap for dynamic allocation */
     if (init_kernel_heap() != 0) {
         kernel_panic("MM: Kernel heap initialization failed");
         return -1;
     }
     init_state.kernel_heap_done = 1;
-
-    /* Initialize full paging system */
-    init_paging();
-    init_state.paging_done = 1;
 
     kprint("MM: Virtual memory management initialized successfully\n");
     return 0;
@@ -192,11 +233,11 @@ static void display_memory_summary(void) {
     kprint("Memory Layout:         ");
     kprint(init_state.memory_layout_done ? "OK" : "FAILED");
     kprint("\n");
-    kprint("Multiboot Parsing:     ");
-    kprint(init_state.multiboot_parsed ? "OK" : "FAILED");
+    kprint("Limine Memmap:         ");
+    kprint(init_state.limine_memmap_parsed ? "OK" : "FAILED");
     kprint("\n");
-    kprint("EFI Memory Parsing:    ");
-    kprint(init_state.efi_memory_parsed ? "OK" : "FAILED");
+    kprint("HHDM Response:         ");
+    kprint(init_state.hhdm_received ? "OK" : "MISSING");
     kprint("\n");
     kprint("Page Allocator:        ");
     kprint(init_state.page_allocator_done ? "OK" : "FAILED");
@@ -228,6 +269,9 @@ static void display_memory_summary(void) {
     kprint("Memory Regions:        ");
     kprint_decimal(init_state.memory_regions_count);
     kprint(" regions\n");
+    kprint("HHDM Offset:           0x");
+    kprint_hex(init_state.hhdm_offset);
+    kprint("\n");
     kprint("=====================================================\n\n");
 }
 
@@ -239,14 +283,19 @@ static void display_memory_summary(void) {
  * Initialize the complete memory management system
  * Must be called early during kernel boot after basic CPU setup
  *
- * @param multiboot_info_addr Physical address of Multiboot2 information structure
+ * @param memmap Limine memory map response provided by bootloader
+ * @param hhdm_offset Higher-half direct mapping offset from Limine
  * @return 0 on success, -1 on failure (calls kernel_panic)
  */
-int init_memory_system(uint64_t multiboot_info_addr) {
+int init_memory_system(const struct limine_memmap_response *memmap,
+                       uint64_t hhdm_offset) {
     kprint("\n========== SlopOS Memory System Initialization ==========\n");
     kprint("Initializing complete memory management system...\n");
-    kprint("Multiboot2 info at: 0x");
-    kprint_hex(multiboot_info_addr);
+    kprint("Limine memmap response at: 0x");
+    kprint_hex((uint64_t)(uintptr_t)memmap);
+    kprint("\n");
+    kprint("Reported HHDM offset: 0x");
+    kprint_hex(hhdm_offset);
     kprint("\n");
 
     /* Phase 1: Early paging for basic memory access */
@@ -254,13 +303,13 @@ int init_memory_system(uint64_t multiboot_info_addr) {
         return -1;
     }
 
-    /* Phase 2: Discover available physical memory */
-    if (initialize_memory_discovery(multiboot_info_addr) != 0) {
+    /* Phase 2: Set up physical memory allocators */
+    if (initialize_physical_allocators() != 0) {
         return -1;
     }
 
-    /* Phase 3: Set up physical memory allocators */
-    if (initialize_physical_allocators() != 0) {
+    /* Phase 3: Discover available physical memory */
+    if (initialize_memory_discovery(memmap, hhdm_offset) != 0) {
         return -1;
     }
 
@@ -290,8 +339,8 @@ int init_memory_system(uint64_t multiboot_info_addr) {
 int is_memory_system_initialized(void) {
     return (init_state.early_paging_done &&
             init_state.memory_layout_done &&
-            init_state.multiboot_parsed &&
-            init_state.efi_memory_parsed &&
+            init_state.limine_memmap_parsed &&
+            init_state.hhdm_received &&
             init_state.page_allocator_done &&
             init_state.buddy_allocator_done &&
             init_state.kernel_heap_done &&

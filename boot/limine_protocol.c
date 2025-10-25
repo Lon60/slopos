@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "../third_party/limine/limine.h"
+#include "limine_protocol.h"
 #include "../drivers/serial.h"
 
 /* ========================================================================
@@ -303,4 +303,12 @@ uint64_t get_kernel_phys_base(void) {
  */
 uint64_t get_kernel_virt_base(void) {
     return system_info.kernel_virt_base;
+}
+
+const struct limine_memmap_response *limine_get_memmap_response(void) {
+    return (const struct limine_memmap_response *)memmap_request.response;
+}
+
+const struct limine_hhdm_response *limine_get_hhdm_response(void) {
+    return (const struct limine_hhdm_response *)hhdm_request.response;
 }

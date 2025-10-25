@@ -23,7 +23,7 @@ uint64_t virt_to_phys(uint64_t vaddr);
  * ======================================================================== */
 
 /* Kernel heap configuration */
-#define KERNEL_HEAP_START             0xFFFF800000000000ULL  /* Kernel heap virtual base */
+#define KERNEL_HEAP_START             0xFFFFFFFF90000000ULL  /* Kernel heap virtual base */
 #define KERNEL_HEAP_SIZE              0x10000000             /* 256MB initial heap */
 #define KERNEL_HEAP_PAGE_COUNT        (KERNEL_HEAP_SIZE / PAGE_SIZE_4KB)
 

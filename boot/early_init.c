@@ -9,6 +9,7 @@
 #include "constants.h"
 #include "idt.h"
 #include "debug.h"
+#include "limine_protocol.h"
 #include "../drivers/pic.h"
 #include "../drivers/apic.h"
 #include "../drivers/interrupt_test.h"
@@ -23,8 +24,9 @@ extern void verify_memory_layout(void);
 extern void check_stack_health(void);
 extern void kernel_panic(const char *message);
 extern void init_paging(void);
-extern int init_early_paging(void);
 extern void init_kernel_memory_layout(void);
+extern int init_memory_system(const struct limine_memmap_response *memmap,
+                              uint64_t hhdm_offset);
 
 // IDT and interrupt handling
 extern void init_idt(void);
@@ -66,7 +68,7 @@ static void early_debug_string(const char *str) {
  * Initialize kernel subsystems in proper order
  */
 static void initialize_kernel_subsystems(void) {
-    early_debug_string("SlopOS: Initializing kernel subsystems\n");
+    early_debug_string("SlopOS: Initializing remaining kernel subsystems\n");
 
     // Initialize debug subsystem first
     debug_init();
@@ -83,15 +85,6 @@ static void initialize_kernel_subsystems(void) {
     pic_init();
     early_debug_string("SlopOS: PIC initialized - interrupt control ready\n");
 
-    // Initialize Limine boot protocol
-    early_debug_string("SlopOS: Initializing Limine boot protocol...\n");
-    extern int init_limine_protocol(void);
-    if (init_limine_protocol() == 0) {
-        early_debug_string("SlopOS: Limine protocol initialized successfully\n");
-    } else {
-        early_debug_string("SlopOS: WARNING - Limine protocol initialization failed\n");
-    }
-
     // Skip paging initialization - already set up by boot assembly code
     // The boot/entry32.s and boot/entry64.s have already configured:
     //   - CR3 register pointing to PML4
@@ -99,13 +92,7 @@ static void initialize_kernel_subsystems(void) {
     //   - Higher-half kernel mapping
     // Attempting to reinitialize would corrupt the active page tables
     early_debug_string("SlopOS: Using paging already configured by bootloader\n");
-    
-    // TODO: Later we can enhance paging (add more mappings, set up heap region, etc.)
-    // but we must NOT zero out or recreate the active page tables
-
-    // Initialize kernel memory layout
-    init_kernel_memory_layout();
-    early_debug_string("SlopOS: Kernel memory layout initialized\n");
+    early_debug_string("SlopOS: Memory system initialized earlier via Limine data\n");
 
     // Detect and initialize APIC now that memory management is available
     early_debug_string("SlopOS: Detecting Local APIC...\n");
@@ -151,6 +138,39 @@ void kernel_main(void) {
     kprintln("SlopOS Kernel Started!");
     kprintln("Booting via Limine Protocol...");
 
+    kprintln("Initializing Limine protocol interface...");
+    if (init_limine_protocol() != 0) {
+        kprintln("ERROR: Limine protocol initialization failed");
+        kernel_panic("Limine protocol initialization failed");
+    } else {
+        kprintln("Limine protocol interface ready.");
+    }
+
+    if (!is_memory_map_available()) {
+        kprintln("ERROR: Limine did not provide a memory map");
+        kernel_panic("Missing Limine memory map");
+    }
+
+    const struct limine_memmap_response *limine_memmap = limine_get_memmap_response();
+    if (!limine_memmap) {
+        kprintln("ERROR: Limine memory map response pointer is NULL");
+        kernel_panic("Invalid Limine memory map");
+    }
+
+    uint64_t hhdm_offset = 0;
+    if (is_hhdm_available()) {
+        hhdm_offset = get_hhdm_offset();
+    } else {
+        kprintln("WARNING: Limine did not report an HHDM offset");
+    }
+
+    kprintln("Initializing memory management from Limine data...");
+    if (init_memory_system(limine_memmap, hhdm_offset) != 0) {
+        kprintln("ERROR: Memory system initialization failed");
+        kernel_panic("Memory system initialization failed");
+    }
+    kprintln("Memory management initialized.");
+
     // Verify we're running in higher-half virtual memory
     uint64_t stack_ptr;
     __asm__ volatile ("movq %%rsp, %0" : "=r" (stack_ptr));
@@ -174,8 +194,8 @@ current_location:
         kprintln("WARNING: Not running in higher-half virtual memory");
     }
 
-    // Initialize kernel subsystems with memory management
-    kprintln("Initializing kernel subsystems...");
+    // Initialize remaining kernel subsystems now that memory is online
+    kprintln("Initializing remaining kernel subsystems...");
     initialize_kernel_subsystems();
     kprintln("Kernel subsystem initialization complete.");
 

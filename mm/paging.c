@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../drivers/serial.h"
 #include "paging.h"
+#include "../boot/limine_protocol.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -21,8 +22,8 @@ int free_page_frame(uint64_t phys_addr);
 /* Process virtual memory layout constants */
 #define USER_SPACE_START              0x400000        /* Typical user space start (4MB) */
 #define USER_SPACE_END                0x800000000000ULL /* User space end (128TB) */
-#define KERNEL_HEAP_START             0xFFFF800000000000ULL /* Kernel heap space */
-#define KERNEL_HEAP_END               0xFFFFFFFF80000000ULL /* Before higher-half kernel */
+#define KERNEL_HEAP_START             0xFFFFFFFF90000000ULL /* Kernel heap space */
+#define KERNEL_HEAP_END               0xFFFFFFFFA0000000ULL /* End of kernel heap region */
 
 /* Page table entry mask for extracting physical address */
 #define PTE_ADDRESS_MASK              0x000FFFFFFFFFF000ULL
@@ -47,6 +48,23 @@ static process_page_dir_t kernel_page_dir = {
 
 /* Current active page directory for running process */
 static process_page_dir_t *current_page_dir = &kernel_page_dir;
+
+/* Helper: translate physical address into an accessible kernel pointer */
+static inline uint64_t phys_to_kernel_addr(uint64_t phys_addr) {
+    if (phys_addr == 0) {
+        return 0;
+    }
+
+    if (is_hhdm_available()) {
+        return phys_addr + get_hhdm_offset();
+    }
+
+    return phys_addr;  /* Assume identity mapping is available */
+}
+
+static inline page_table_t *phys_to_page_table_ptr(uint64_t phys_addr) {
+    return (page_table_t *)phys_to_kernel_addr(phys_addr);
+}
 
 /* ========================================================================
  * SHARED HELPER IMPLEMENTATIONS
@@ -204,7 +222,7 @@ uint64_t virt_to_phys(uint64_t vaddr) {
     }
 
     /* Get PDPT table */
-    page_table_t *pdpt = (page_table_t*)pte_address(pml4_entry);
+    page_table_t *pdpt = phys_to_page_table_ptr(pte_address(pml4_entry));
     if (!pdpt) {
         kprint("virt_to_phys: Invalid PDPT address\n");
         return 0;
@@ -222,7 +240,7 @@ uint64_t virt_to_phys(uint64_t vaddr) {
     }
 
     /* Traverse PDPT -> PD */
-    page_table_t *pd = (page_table_t*)pte_address(pdpt_entry);
+    page_table_t *pd = phys_to_page_table_ptr(pte_address(pdpt_entry));
     if (!pd) {
         kprint("virt_to_phys: Invalid PD address\n");
         return 0;
@@ -240,7 +258,7 @@ uint64_t virt_to_phys(uint64_t vaddr) {
     }
 
     /* Traverse PD -> PT */
-    page_table_t *pt = (page_table_t*)pte_address(pd_entry);
+    page_table_t *pt = phys_to_page_table_ptr(pte_address(pd_entry));
     if (!pt) {
         kprint("virt_to_phys: Invalid PT address\n");
         return 0;
@@ -310,7 +328,7 @@ int map_page_2mb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
     }
 
     /* Get PDPT table */
-    page_table_t *pdpt = (page_table_t*)pte_address(pml4_entry);
+    page_table_t *pdpt = phys_to_page_table_ptr(pte_address(pml4_entry));
     if (!pdpt) {
         kprint("map_page_2mb: Invalid PDPT address\n");
         return -1;
@@ -323,7 +341,7 @@ int map_page_2mb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
     }
 
     /* Get PD table */
-    page_table_t *pd = (page_table_t*)pte_address(pdpt_entry);
+    page_table_t *pd = phys_to_page_table_ptr(pte_address(pdpt_entry));
     if (!pd) {
         kprint("map_page_2mb: Invalid PD address\n");
         return -1;
@@ -379,7 +397,7 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
             return -1;
         }
 
-        pdpt = (page_table_t*)pdpt_phys;
+        pdpt = phys_to_page_table_ptr(pdpt_phys);
         for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
             pdpt->entries[i] = 0;
         }
@@ -388,7 +406,7 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
         allocated_pdpt = 1;
     } else {
         pdpt_phys = pte_address(pml4_entry);
-        pdpt = (page_table_t*)pdpt_phys;
+        pdpt = phys_to_page_table_ptr(pdpt_phys);
     }
 
     if (!pdpt) {
@@ -404,7 +422,7 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
             goto failure;
         }
 
-        pd = (page_table_t*)pd_phys;
+        pd = phys_to_page_table_ptr(pd_phys);
         for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
             pd->entries[i] = 0;
         }
@@ -418,7 +436,7 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
         }
 
         pd_phys = pte_address(pdpt_entry);
-        pd = (page_table_t*)pd_phys;
+        pd = phys_to_page_table_ptr(pd_phys);
     }
 
     if (!pd) {
@@ -434,7 +452,7 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
             goto failure;
         }
 
-        pt = (page_table_t*)pt_phys;
+        pt = phys_to_page_table_ptr(pt_phys);
         for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
             pt->entries[i] = 0;
         }
@@ -448,7 +466,7 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
         }
 
         pt_phys = pte_address(pd_entry);
-        pt = (page_table_t*)pt_phys;
+        pt = phys_to_page_table_ptr(pt_phys);
     }
 
     if (!pt) {
@@ -517,7 +535,7 @@ int unmap_page(uint64_t vaddr) {
         return 0;  /* Already unmapped */
     }
 
-    page_table_t *pdpt = (page_table_t*)pte_address(pml4_entry);
+    page_table_t *pdpt = phys_to_page_table_ptr(pte_address(pml4_entry));
     uint64_t pdpt_entry = pdpt->entries[pdpt_idx];
     if (!pte_present(pdpt_entry)) {
         return 0;  /* Already unmapped */
@@ -530,7 +548,7 @@ int unmap_page(uint64_t vaddr) {
         return 0;
     }
 
-    page_table_t *pd = (page_table_t*)pte_address(pdpt_entry);
+    page_table_t *pd = phys_to_page_table_ptr(pte_address(pdpt_entry));
     uint64_t pd_entry = pd->entries[pd_idx];
     if (!pte_present(pd_entry)) {
         return 0;  /* Already unmapped */
@@ -544,7 +562,7 @@ int unmap_page(uint64_t vaddr) {
     }
 
     /* 4KB page - clear PT entry */
-    page_table_t *pt = (page_table_t*)pte_address(pd_entry);
+    page_table_t *pt = phys_to_page_table_ptr(pte_address(pd_entry));
     pt->entries[pt_idx] = 0;
     invlpg(vaddr);
 
@@ -595,12 +613,12 @@ void init_paging(void) {
     uint64_t cr3 = get_cr3();
     kernel_page_dir.pml4_phys = cr3 & ~0xFFF;
 
-    /* Verify early page tables are properly set up */
-    if ((uint64_t)kernel_page_dir.pml4 != (kernel_page_dir.pml4_phys)) {
-        /* Update kernel page dir if CR3 points elsewhere */
-        kernel_page_dir.pml4 = (page_table_t*)(kernel_page_dir.pml4_phys);
-        kprint("Updated kernel PML4 pointer from CR3\n");
+    /* Ensure kernel PML4 pointer references the mapped table */
+    page_table_t *pml4_ptr = phys_to_page_table_ptr(kernel_page_dir.pml4_phys);
+    if (!pml4_ptr) {
+        kernel_panic("Failed to translate kernel PML4 physical address");
     }
+    kernel_page_dir.pml4 = pml4_ptr;
 
     /* Verify higher-half kernel mapping exists */
     uint64_t kernel_phys = virt_to_phys(KERNEL_VIRTUAL_BASE);
@@ -614,7 +632,7 @@ void init_paging(void) {
 
     /* Verify identity mapping exists for early boot hardware access */
     uint64_t identity_phys = virt_to_phys(0x100000); /* 1MB mark */
-    if (identity_phys == 0x100000) {
+    if (identity_phys == 0x100000 || is_hhdm_available()) {
         kprint("Identity mapping verified\n");
     } else {
         kprint("Identity mapping not found (may be normal after early boot)\n");
@@ -667,7 +685,7 @@ uint64_t get_page_size(uint64_t vaddr) {
     }
 
     /* Get PDPT table */
-    page_table_t *pdpt = (page_table_t*)pte_address(pml4_entry);
+    page_table_t *pdpt = phys_to_page_table_ptr(pte_address(pml4_entry));
     uint64_t pdpt_entry = pdpt->entries[pdpt_idx];
     if (!pte_present(pdpt_entry)) {
         return 0;
@@ -679,7 +697,7 @@ uint64_t get_page_size(uint64_t vaddr) {
     }
 
     /* Get PD table */
-    page_table_t *pd = (page_table_t*)pte_address(pdpt_entry);
+    page_table_t *pd = phys_to_page_table_ptr(pte_address(pdpt_entry));
     uint64_t pd_entry = pd->entries[pd_idx];
     if (!pte_present(pd_entry)) {
         return 0;

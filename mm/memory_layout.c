@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/limine_protocol.h"
 
 /* ========================================================================
  * MEMORY LAYOUT CONSTANTS AND STRUCTURES
@@ -226,18 +227,23 @@ int is_user_address(uint64_t addr) {
  * Convert physical address to virtual address
  */
 uint64_t phys_to_virt(uint64_t phys_addr) {
-    /* For kernel addresses, add higher-half offset */
+    /* Kernel image physical range maps to higher-half virtual base */
     if (phys_addr >= kernel_layout.kernel_start_phys &&
         phys_addr < kernel_layout.kernel_end_phys) {
         return phys_addr - kernel_layout.kernel_start_phys + kernel_layout.kernel_start_virt;
     }
 
-    /* For identity-mapped region, address is the same */
+    /* Prefer higher-half direct map when available */
+    if (is_hhdm_available()) {
+        return phys_addr + get_hhdm_offset();
+    }
+
+    /* Identity mapping established by early boot code */
     if (phys_addr < kernel_layout.identity_map_end) {
         return phys_addr;
     }
 
-    /* For other addresses, add higher-half offset */
+    /* Fallback to traditional higher-half offset */
     return phys_addr + KERNEL_VIRTUAL_BASE;
 }
 
