@@ -176,6 +176,10 @@ int apic_is_bsp(void) {
     return (apic_base_msr & APIC_BASE_BSP) != 0;
 }
 
+int apic_is_enabled(void) {
+    return apic_enabled;
+}
+
 /*
  * Enable APIC
  */

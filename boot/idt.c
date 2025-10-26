@@ -7,6 +7,7 @@
 #include "constants.h"
 #include "safe_stack.h"
 #include "../drivers/serial.h"
+#include "../drivers/irq.h"
 
 extern void kernel_panic(const char *message);
 
@@ -229,9 +230,7 @@ void common_exception_handler(struct interrupt_frame *frame) {
     safe_stack_record_usage(vector, (uint64_t)frame);
 
     if (vector >= IRQ_BASE_VECTOR) {
-        kprint("INTERRUPT: Vector ");
-        kprint_dec(vector);
-        kprintln(" (no handler installed)");
+        irq_dispatch(frame);
         return;
     }
 

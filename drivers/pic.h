@@ -27,23 +27,23 @@
 #define PIC_MASTER_BASE      0x20  // IRQ 0-7 mapped to interrupts 32-39
 #define PIC_SLAVE_BASE       0x28  // IRQ 8-15 mapped to interrupts 40-47
 
-// IRQ line numbers
-#define IRQ_TIMER            0
-#define IRQ_KEYBOARD         1
-#define IRQ_CASCADE          2   // Used internally by PICs
-#define IRQ_COM2             3
-#define IRQ_COM1             4
-#define IRQ_LPT2             5
-#define IRQ_FLOPPY           6
-#define IRQ_LPT1             7
-#define IRQ_RTC              8
-#define IRQ_FREE1            9
-#define IRQ_FREE2            10
-#define IRQ_FREE3            11
-#define IRQ_MOUSE            12
-#define IRQ_FPU              13
-#define IRQ_ATA_PRIMARY      14
-#define IRQ_ATA_SECONDARY    15
+// IRQ line numbers (PIC numbering)
+#define PIC_IRQ_TIMER            0
+#define PIC_IRQ_KEYBOARD         1
+#define PIC_IRQ_CASCADE          2   // Used internally by PICs
+#define PIC_IRQ_COM2             3
+#define PIC_IRQ_COM1             4
+#define PIC_IRQ_LPT2             5
+#define PIC_IRQ_FLOPPY           6
+#define PIC_IRQ_LPT1             7
+#define PIC_IRQ_RTC              8
+#define PIC_IRQ_FREE1            9
+#define PIC_IRQ_FREE2            10
+#define PIC_IRQ_FREE3            11
+#define PIC_IRQ_MOUSE            12
+#define PIC_IRQ_FPU              13
+#define PIC_IRQ_ATA_PRIMARY      14
+#define PIC_IRQ_ATA_SECONDARY    15
 
 // PIC management functions
 void pic_init(void);
@@ -58,6 +58,7 @@ uint8_t pic_read_master_mask(void);
 uint8_t pic_read_slave_mask(void);
 void pic_set_master_mask(uint8_t mask);
 void pic_set_slave_mask(uint8_t mask);
+void pic_enable_safe_irqs(void);
 
 // Utility functions
 int pic_irq_is_spurious(uint8_t irq);

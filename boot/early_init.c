@@ -15,6 +15,7 @@
 #include "shutdown.h"
 #include "../drivers/pic.h"
 #include "../drivers/apic.h"
+#include "../drivers/irq.h"
 #include "../drivers/interrupt_test.h"
 
 // Forward declarations for other modules
@@ -94,6 +95,10 @@ static void initialize_kernel_subsystems(void) {
     early_debug_string("SlopOS: Initializing PIC...\n");
     pic_init();
     early_debug_string("SlopOS: PIC initialized - interrupt control ready\n");
+
+    early_debug_string("SlopOS: Configuring IRQ dispatcher...\n");
+    irq_init();
+    early_debug_string("SlopOS: IRQ dispatcher ready\n");
 
     // Skip paging initialization - already set up by boot assembly code
     // The boot/entry32.s and boot/entry64.s have already configured:

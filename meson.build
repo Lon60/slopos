@@ -110,6 +110,7 @@ drivers_sources += files(
   'drivers/serial.c',
   'drivers/pic.c',
   'drivers/apic.c',
+  'drivers/irq.c',
   'drivers/interrupt_test.c',
   'drivers/interrupt_test_config.c',
   'drivers/exceptions.s',

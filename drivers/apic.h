@@ -83,6 +83,7 @@ int apic_init(void);
 int apic_is_available(void);
 int apic_is_x2apic_available(void);
 int apic_is_bsp(void);
+int apic_is_enabled(void);
 
 // APIC control
 void apic_enable(void);
