@@ -14,11 +14,13 @@ interrupt_tests_default_enabled_opt = get_option('interrupt_tests_default')
 interrupt_tests_default_suite_opt = get_option('interrupt_tests_default_suite')
 interrupt_tests_default_timeout_opt = get_option('interrupt_tests_default_timeout')
 interrupt_tests_default_verbosity_opt = get_option('interrupt_tests_default_verbosity')
+interrupt_tests_default_shutdown_opt = get_option('interrupt_tests_default_shutdown')
 
 interrupt_tests_default_enabled_define = interrupt_tests_default_enabled_opt ? '1' : '0'
 interrupt_tests_default_suite_define = '"' + interrupt_tests_default_suite_opt + '"'
 interrupt_tests_default_verbosity_define = '"' + interrupt_tests_default_verbosity_opt + '"'
 interrupt_tests_default_timeout_define = interrupt_tests_default_timeout_opt.to_string()
+interrupt_tests_default_shutdown_define = interrupt_tests_default_shutdown_opt ? '1' : '0'
 
 add_project_arguments([
     '-ffreestanding',
@@ -41,7 +43,8 @@ add_project_arguments([
     '-DINTERRUPT_TESTS_DEFAULT_ENABLED=' + interrupt_tests_default_enabled_define,
     '-DINTERRUPT_TESTS_DEFAULT_SUITE=' + interrupt_tests_default_suite_define,
     '-DINTERRUPT_TESTS_DEFAULT_TIMEOUT_MS=' + interrupt_tests_default_timeout_define,
-    '-DINTERRUPT_TESTS_DEFAULT_VERBOSITY=' + interrupt_tests_default_verbosity_define
+    '-DINTERRUPT_TESTS_DEFAULT_VERBOSITY=' + interrupt_tests_default_verbosity_define,
+    '-DINTERRUPT_TESTS_DEFAULT_SHUTDOWN=' + interrupt_tests_default_shutdown_define
   ],
   language: 'c')
 

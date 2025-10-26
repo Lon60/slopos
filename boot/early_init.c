@@ -12,6 +12,7 @@
 #include "gdt.h"
 #include "limine_protocol.h"
 #include "safe_stack.h"
+#include "shutdown.h"
 #include "../drivers/pic.h"
 #include "../drivers/apic.h"
 #include "../drivers/interrupt_test.h"
@@ -145,11 +146,18 @@ static void initialize_kernel_subsystems(void) {
 
         interrupt_test_init(&test_config);
         int passed = run_all_interrupt_tests(&test_config);
+        struct test_stats *stats = test_get_stats();
+        int failed_tests = stats ? stats->failed_tests : 0;
         interrupt_test_cleanup();
 
         kprint("INTERRUPT_TEST: Boot run passed tests -> ");
         kprint_dec(passed);
         kprintln("");
+
+        if (test_config.shutdown_on_complete) {
+            kprintln("INTERRUPT_TEST: Auto shutdown enabled after harness");
+            interrupt_test_request_shutdown(failed_tests);
+        }
 
         early_debug_string("SlopOS: Interrupt test framework complete\n");
     } else {

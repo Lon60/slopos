@@ -20,10 +20,9 @@ Replace the `common_interrupt_handler` default in `drivers/exceptions.s` and rel
 - Unregistered IRQs do not crash the system; they trigger a single warning and are masked safely.
 - Existing PIC initialisation (`pic_enable_safe_irqs`) integrates with the dispatcher without regression.
 - A manual test (e.g., enabling the timer, injecting keyboard scancodes) shows handlers executing and returning control cleanly.
-- Full build and boot validation passes: `meson compile -C builddir`, `scripts/build_iso.sh`, and `scripts/run_qemu_ovmf.sh builddir/slop.iso 15` complete without errors and the boot log reflects normal startup with active IRQ diagnostics.
+- Full build and boot validation passes: `meson compile -C builddir`, `make iso`, and `make boot-log BOOT_LOG_TIMEOUT=15` complete without errors and the boot log reflects normal startup with active IRQ diagnostics.
 
 ## Notes for the Implementer
 - Keep the dispatcher lightweight: save minimal context in assembly, defer heavy work to C handlers.
 - Acknowledge the PIC/APIC before returning to avoid lost interrupts.
 - Consider adding per-IRQ statistics (count, last timestamp) to aid debugging.
-

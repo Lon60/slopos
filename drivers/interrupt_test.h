@@ -93,6 +93,7 @@ void test_set_resume_point(void *rip);
 void test_clear_resume_point(void);
 void test_report_results(void);
 struct test_stats *test_get_stats(void);
+void interrupt_test_request_shutdown(int failed_tests);
 
 // Exception handler for tests
 void test_exception_handler(struct interrupt_frame *frame);

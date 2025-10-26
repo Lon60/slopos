@@ -25,6 +25,10 @@
 #define INTERRUPT_TESTS_DEFAULT_VERBOSITY "summary"
 #endif
 
+#ifndef INTERRUPT_TESTS_DEFAULT_SHUTDOWN
+#define INTERRUPT_TESTS_DEFAULT_SHUTDOWN 0
+#endif
+
 /* Verbosity levels */
 enum interrupt_test_verbosity {
     INTERRUPT_TEST_VERBOSITY_QUIET = 0,
@@ -45,6 +49,7 @@ struct interrupt_test_config {
     enum interrupt_test_verbosity verbosity;
     uint32_t suite_mask;
     uint32_t timeout_ms;
+    int shutdown_on_complete;
 };
 
 void interrupt_test_config_init_defaults(struct interrupt_test_config *config);

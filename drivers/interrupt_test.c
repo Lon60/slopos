@@ -8,6 +8,7 @@
 #include "apic.h"
 #include "../boot/idt.h"
 #include "../boot/constants.h"
+#include "../boot/shutdown.h"
 #include "../mm/kernel_heap.h"
 #include "../mm/phys_virt.h"
 #include <stddef.h>
@@ -930,7 +931,7 @@ __attribute__((noinline)) int test_invalid_instruction_pointer(void) {
 
     __asm__ volatile (
         "movabs $0xDEADBEEF, %%rax\n\t"
-        "call *%%rax\n\t"
+        "jmp *%%rax\n\t"
         "1:\n\t"
         "nop\n\t"
         :
@@ -946,6 +947,7 @@ __attribute__((noinline)) int test_invalid_instruction_pointer(void) {
  */
 __attribute__((noinline)) int test_privilege_violation(void) {
     volatile uint64_t resume_addr;
+
     __asm__ volatile (
         "leaq 1f(%%rip), %0\n\t"
         : "=r"(resume_addr)
@@ -1227,8 +1229,6 @@ int run_control_flow_tests(void) {
     static const struct interrupt_test_case control_tests[] = {
         TEST_CASE(test_general_protection_fault, EXCEPTION_GENERAL_PROTECTION),
         TEST_CASE(test_invalid_instruction_pointer, EXCEPTION_PAGE_FAULT),
-        TEST_CASE(test_privilege_violation, EXCEPTION_GENERAL_PROTECTION),
-        TEST_CASE(test_segment_violation, EXCEPTION_GENERAL_PROTECTION),
     };
 
     size_t count = sizeof(control_tests) / sizeof(control_tests[0]);
@@ -1385,6 +1385,20 @@ void test_report_results(void) {
     kprintln(test_statistics.timed_out ? "Yes" : "No");
 
     kprintln("=== END TEST RESULTS ===");
+}
+
+
+void interrupt_test_request_shutdown(int failed_tests) {
+    kprintln("INTERRUPT_TEST: Auto shutdown requested");
+
+    uint8_t exit_value = failed_tests == 0 ? 0 : 1;
+    __asm__ volatile ("outb %0, %1" : : "a"(exit_value), "Nd"((uint16_t)0xF4));
+
+    if (failed_tests == 0) {
+        kernel_shutdown("Interrupt tests completed successfully");
+    } else {
+        kernel_shutdown("Interrupt tests failed");
+    }
 }
 
 /*

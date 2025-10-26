@@ -141,6 +141,30 @@ static uint32_t parse_u32(const char *value, uint32_t fallback) {
     return (uint32_t)result;
 }
 
+static int parse_on_off_flag(const char *value, int current) {
+    if (!value) {
+        return current;
+    }
+
+    if (string_equals_ci(value, "on") ||
+        string_equals_ci(value, "true") ||
+        string_equals_ci(value, "yes") ||
+        string_equals_ci(value, "enabled") ||
+        string_equals_ci(value, "1")) {
+        return 1;
+    }
+
+    if (string_equals_ci(value, "off") ||
+        string_equals_ci(value, "false") ||
+        string_equals_ci(value, "no") ||
+        string_equals_ci(value, "disabled") ||
+        string_equals_ci(value, "0")) {
+        return 0;
+    }
+
+    return current;
+}
+
 static void apply_enable_token(struct interrupt_test_config *config,
                                const char *value) {
     if (!config || !value) {
@@ -234,6 +258,18 @@ static void process_token(struct interrupt_test_config *config,
         config->timeout_ms = parse_u32(value, config->timeout_ms);
         return;
     }
+
+    if (string_equals_n_ci(token, "itests.shutdown=", 16)) {
+        value = token + 16;
+        config->shutdown_on_complete = parse_on_off_flag(value, config->shutdown_on_complete);
+        return;
+    }
+
+    if (string_equals_n_ci(token, "interrupt_tests.shutdown=", 25)) {
+        value = token + 25;
+        config->shutdown_on_complete = parse_on_off_flag(value, config->shutdown_on_complete);
+        return;
+    }
 }
 
 void interrupt_test_config_init_defaults(struct interrupt_test_config *config) {
@@ -245,6 +281,7 @@ void interrupt_test_config_init_defaults(struct interrupt_test_config *config) {
     config->timeout_ms = (uint32_t)INTERRUPT_TESTS_DEFAULT_TIMEOUT_MS;
     config->verbosity = verbosity_from_string(INTERRUPT_TESTS_DEFAULT_VERBOSITY);
     config->suite_mask = suite_from_string(INTERRUPT_TESTS_DEFAULT_SUITE);
+    config->shutdown_on_complete = INTERRUPT_TESTS_DEFAULT_SHUTDOWN ? 1 : 0;
 }
 
 void interrupt_test_config_parse_cmdline(struct interrupt_test_config *config,

@@ -20,3 +20,8 @@ option('interrupt_tests_default_verbosity',
        choices : ['quiet', 'summary', 'verbose'],
        value : 'summary',
        description : 'Default verbosity for interrupt test logging')
+
+option('interrupt_tests_default_shutdown',
+       type : 'boolean',
+       value : false,
+       description : 'Automatically shut down after interrupt tests complete')

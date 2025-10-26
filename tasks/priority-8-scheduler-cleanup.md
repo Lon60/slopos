@@ -20,10 +20,9 @@ Tighten the cooperative scheduler so tasks that return are properly terminated, 
 - Scheduler statistics (context switches, yields) increment accurately during demo tasks.
 - `dump_stack_trace` prints at least a few frames when debugging, without triggering recursive faults.
 - Debug timestamps correlate with timer ticks or elapsed time rather than a synthetic counter.
-- Full build and boot validation passes: `meson compile -C builddir`, `scripts/build_iso.sh`, and `scripts/run_qemu_ovmf.sh builddir/slop.iso 15` complete without errors and the boot log confirms scheduler diagnostics operating normally.
+- Full build and boot validation passes: `meson compile -C builddir`, `make iso`, and `make boot-log BOOT_LOG_TIMEOUT=15` complete without errors and the boot log confirms scheduler diagnostics operating normally.
 
 ## Notes for the Implementer
 - Keep assembly changes minimal and well-commented; document register usage clearly.
 - Validate termination paths using the existing scheduler test harness (`run_scheduler_test`).
 - Consider adding optional debug builds to stress returning tasks and stack tracing.
-

@@ -20,10 +20,9 @@ Re-enable and harden the SlopOS interrupt test framework so it can execute contr
 - All sample tests in `drivers/interrupt_test.c` run and increment their pass counters appropriately.
 - Interrupt handlers restore normal kernel operation after each injected fault.
 - Serial log (`test_output.log`) includes a clear summary: total tests, passed, failed, unexpected exceptions.
-- Full build and boot validation passes: `meson compile -C builddir`, `scripts/build_iso.sh`, and `scripts/run_qemu_ovmf.sh builddir/slop.iso 15` complete without errors and the boot log shows the expected SlopOS banner with test results present.
+- Full build and boot validation passes: `meson compile -C builddir`, `make iso`, and `make boot-log BOOT_LOG_TIMEOUT=15` complete without errors and the boot log shows the expected SlopOS banner with test results present.
 
 ## Notes for the Implementer
 - Consider isolating tests onto a dedicated kernel thread/task to simplify recovery.
 - Use `cli`/`sti` carefully; ensure global interrupt state is restored.
 - Avoid heavy kprint usage inside the low-level handlers to minimise reentrancy risk.
-
