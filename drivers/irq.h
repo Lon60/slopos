@@ -19,5 +19,6 @@ void irq_enable_line(uint8_t irq);
 void irq_disable_line(uint8_t irq);
 void irq_dispatch(struct interrupt_frame *frame);
 int irq_get_stats(uint8_t irq, struct irq_stats *out_stats);
+uint64_t irq_get_timer_ticks(void);
 
 #endif /* DRIVERS_IRQ_H */

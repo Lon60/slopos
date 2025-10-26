@@ -7,17 +7,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/constants.h"
+#include "../boot/debug.h"
 #include "../drivers/serial.h"
 #include "../mm/paging.h"
-
-/* Include task and scheduler definitions */
-#include "task.h"
-
-/* Forward declarations from task.c */
-extern task_t *task_get_current(void);
-extern void task_set_current(task_t *task);
-extern int task_set_state(uint32_t task_id, uint8_t new_state);
-extern int task_get_info(uint32_t task_id, task_t **task_info);
+#include "scheduler.h"
 
 /* Forward declarations from context_switch.s */
 extern void context_switch(void *old_context, void *new_context);
@@ -245,6 +238,13 @@ static void switch_to_task(task_t *new_task) {
 
     task_t *old_task = scheduler.current_task;
 
+    if (old_task == new_task) {
+        return;
+    }
+
+    uint64_t timestamp = debug_get_timestamp();
+    task_record_context_switch(old_task, new_task, timestamp);
+
     /* Update scheduler state */
     scheduler.current_task = new_task;
     task_set_current(new_task);
@@ -313,6 +313,10 @@ void schedule(void) {
 void yield(void) {
     scheduler.total_yields++;
 
+    if (scheduler.current_task) {
+        task_record_yield(scheduler.current_task);
+    }
+
     /* Trigger rescheduling */
     schedule();
 }
@@ -334,6 +338,34 @@ void block_current_task(void) {
     schedule();
 }
 
+int task_wait_for(uint32_t task_id) {
+    task_t *current = scheduler.current_task;
+    if (!current) {
+        return -1;
+    }
+
+    if (task_id == INVALID_TASK_ID || current->task_id == task_id) {
+        return -1;
+    }
+
+    task_t *target = NULL;
+    if (task_get_info(task_id, &target) != 0 || !target) {
+        current->waiting_on_task_id = INVALID_TASK_ID;
+        return 0; /* Target already gone */
+    }
+
+    if (target->state == TASK_STATE_INVALID || target->task_id == INVALID_TASK_ID) {
+        current->waiting_on_task_id = INVALID_TASK_ID;
+        return 0;
+    }
+
+    current->waiting_on_task_id = task_id;
+    block_current_task();
+
+    current->waiting_on_task_id = INVALID_TASK_ID;
+    return 0;
+}
+
 /*
  * Unblock task (add back to ready queue)
  */
@@ -347,6 +379,38 @@ int unblock_task(task_t *task) {
 
     /* Add back to ready queue */
     return schedule_task(task);
+}
+
+/*
+ * Terminate the currently running task and hand control to the scheduler
+ */
+void scheduler_task_exit(void) {
+    task_t *current = scheduler.current_task;
+
+    if (!current) {
+        kprintln("scheduler_task_exit: No current task");
+        schedule();
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    uint64_t timestamp = debug_get_timestamp();
+    task_record_context_switch(current, NULL, timestamp);
+
+    if (task_terminate((uint32_t)-1) != 0) {
+        kprintln("scheduler_task_exit: Failed to terminate current task");
+    }
+
+    scheduler.current_task = NULL;
+    task_set_current(NULL);
+
+    schedule();
+
+    kprintln("scheduler_task_exit: Schedule returned unexpectedly");
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
 }
 
 /* ========================================================================

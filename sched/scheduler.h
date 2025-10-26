@@ -129,10 +129,20 @@ void yield(void);
 void block_current_task(void);
 
 /*
+ * Block the current task until the specified task terminates
+ */
+int task_wait_for(uint32_t task_id);
+
+/*
  * Unblock task (add back to ready queue)
  * Returns 0 on success, non-zero on failure
  */
 int unblock_task(task_t *task);
+
+/*
+ * Terminate the current task and reschedule
+ */
+void scheduler_task_exit(void) __attribute__((noreturn));
 
 /*
  * Check if scheduler is enabled

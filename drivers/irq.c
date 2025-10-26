@@ -125,6 +125,10 @@ static void keyboard_irq_handler(uint8_t irq, struct interrupt_frame *frame, voi
     }
 }
 
+uint64_t irq_get_timer_ticks(void) {
+    return timer_tick_counter;
+}
+
 void irq_init(void) {
     for (int i = 0; i < IRQ_LINES; i++) {
         irq_table[i].handler = NULL;
