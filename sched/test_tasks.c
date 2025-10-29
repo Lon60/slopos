@@ -50,11 +50,6 @@ void test_task_a(void *arg) {
     }
 
     kprint("Task A completed\n");
-
-    /* Task finished - yield forever to let other tasks run */
-    while (1) {
-        yield();
-    }
 }
 
 /*
@@ -91,11 +86,6 @@ void test_task_b(void *arg) {
     }
 
     kprint("Task B completed\n");
-
-    /* Task finished - yield forever */
-    while (1) {
-        yield();
-    }
 }
 
 /* ========================================================================
@@ -213,6 +203,29 @@ int demo_cooperative_scheduling(void) {
  * SCHEDULER STATISTICS AND MONITORING
  * ======================================================================== */
 
+typedef struct task_stat_print_ctx {
+    uint32_t index;
+} task_stat_print_ctx_t;
+
+static void print_task_stat_line(task_t *task, void *context) {
+    task_stat_print_ctx_t *ctx = (task_stat_print_ctx_t *)context;
+    ctx->index++;
+
+    kprint("  #");
+    kprint_decimal(ctx->index);
+    kprint(" '");
+    kprint(task->name);
+    kprint("' (ID ");
+    kprint_decimal(task->task_id);
+    kprint(") [");
+    kprint(task_state_to_string(task->state));
+    kprint("] runtime=");
+    kprint_decimal(task->total_runtime);
+    kprint(" ticks yields=");
+    kprint_decimal(task->yield_count);
+    kprintln("");
+}
+
 /*
  * Print current scheduler statistics
  */
@@ -226,6 +239,7 @@ void print_scheduler_stats(void) {
     uint32_t ready_tasks, schedule_calls;
     uint32_t total_tasks, active_tasks;
     uint64_t task_switches;
+    uint64_t task_yields = task_get_total_yields();
 
     get_scheduler_stats(&sched_switches, &sched_yields, &ready_tasks, &schedule_calls);
     get_task_stats(&total_tasks, &active_tasks, &task_switches);
@@ -254,6 +268,17 @@ void print_scheduler_stats(void) {
     kprint("Active tasks: ");
     kprint_decimal(active_tasks);
     kprint("\n");
+
+    kprint("Task yields (aggregate): ");
+    kprint_decimal(task_yields);
+    kprint("\n");
+
+    kprint("Active task metrics:\n");
+    task_stat_print_ctx_t ctx = {0};
+    task_iterate_active(print_task_stat_line, &ctx);
+    if (ctx.index == 0) {
+        kprint("  (no active tasks)\n");
+    }
 }
 
 /*

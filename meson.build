@@ -10,6 +10,18 @@ project('slopos', 'c',
   ]
 )
 
+interrupt_tests_default_enabled_opt = get_option('interrupt_tests_default')
+interrupt_tests_default_suite_opt = get_option('interrupt_tests_default_suite')
+interrupt_tests_default_timeout_opt = get_option('interrupt_tests_default_timeout')
+interrupt_tests_default_verbosity_opt = get_option('interrupt_tests_default_verbosity')
+interrupt_tests_default_shutdown_opt = get_option('interrupt_tests_default_shutdown')
+
+interrupt_tests_default_enabled_define = interrupt_tests_default_enabled_opt ? '1' : '0'
+interrupt_tests_default_suite_define = '"' + interrupt_tests_default_suite_opt + '"'
+interrupt_tests_default_verbosity_define = '"' + interrupt_tests_default_verbosity_opt + '"'
+interrupt_tests_default_timeout_define = interrupt_tests_default_timeout_opt.to_string()
+interrupt_tests_default_shutdown_define = interrupt_tests_default_shutdown_opt ? '1' : '0'
+
 add_project_arguments([
     '-ffreestanding',
     '-fno-stack-protector',
@@ -27,7 +39,12 @@ add_project_arguments([
     '-msoft-float',
     '-Wall',
     '-Wextra',
-    '-Wno-unused-parameter'
+    '-Wno-unused-parameter',
+    '-DINTERRUPT_TESTS_DEFAULT_ENABLED=' + interrupt_tests_default_enabled_define,
+    '-DINTERRUPT_TESTS_DEFAULT_SUITE=' + interrupt_tests_default_suite_define,
+    '-DINTERRUPT_TESTS_DEFAULT_TIMEOUT_MS=' + interrupt_tests_default_timeout_define,
+    '-DINTERRUPT_TESTS_DEFAULT_VERBOSITY=' + interrupt_tests_default_verbosity_define,
+    '-DINTERRUPT_TESTS_DEFAULT_SHUTDOWN=' + interrupt_tests_default_shutdown_define
   ],
   language: 'c')
 
@@ -38,6 +55,7 @@ video_sources = []
 drivers_sources = []
 sched_sources = []
 kernel_sources = []
+lib_sources = []
 
 # Boot directory - assembly and early C code
 boot_dir = meson.current_source_dir() / 'boot'
@@ -48,7 +66,10 @@ boot_sources += files(
   'boot/cpu_verify.c',
   'boot/kernel_panic.c',
   'boot/idt.c',
+  'boot/gdt.c',
+  'boot/safe_stack.c',
   'boot/debug.c',
+  'boot/shutdown.c',
   'boot/limine_protocol.c'
 )
 
@@ -65,7 +86,8 @@ mm_sources += files(
   'mm/uefi_memory.c',
   'mm/buddy_alloc.c',
   'mm/vmem_regions.c',
-  'mm/memory_init.c'
+  'mm/memory_init.c',
+  'mm/phys_virt.c'
 )
 
 # Video/framebuffer directory
@@ -76,13 +98,21 @@ video_sources += files(
   'video/font.c'
 )
 
+# Lib directory - utility functions
+lib_dir = meson.current_source_dir() / 'lib'
+lib_sources += files(
+  'lib/string.c'
+)
+
 # Drivers directory
 drivers_dir = meson.current_source_dir() / 'drivers'
 drivers_sources += files(
   'drivers/serial.c',
   'drivers/pic.c',
   'drivers/apic.c',
+  'drivers/irq.c',
   'drivers/interrupt_test.c',
+  'drivers/interrupt_test_config.c',
   'drivers/exceptions.s',
   'drivers/exception_handlers.c'
 )
@@ -100,10 +130,10 @@ sched_sources += files(
 kernel_sources += files()  # Will be populated when source files exist
 
 # Combine all source files
-all_sources = boot_sources + mm_sources + video_sources + drivers_sources + sched_sources + kernel_sources
+all_sources = boot_sources + mm_sources + video_sources + drivers_sources + sched_sources + kernel_sources + lib_sources
 
 # Include directories
-inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers', 'sched')
+inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers', 'sched', 'lib')
 
 # Custom target for assembly files (when they exist)
 # This will be used for boot assembly code that needs special handling

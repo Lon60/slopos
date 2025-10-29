@@ -8,18 +8,22 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "kernel_heap.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
 uint64_t alloc_page_frame(uint32_t flags);
 int free_page_frame(uint64_t phys_addr);
+int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
+int unmap_page(uint64_t vaddr);
+uint64_t virt_to_phys(uint64_t vaddr);
 
 /* ========================================================================
  * KERNEL HEAP CONSTANTS
  * ======================================================================== */
 
 /* Kernel heap configuration */
-#define KERNEL_HEAP_START             0xFFFF800000000000ULL  /* Kernel heap virtual base */
+#define KERNEL_HEAP_START             0xFFFFFFFF90000000ULL  /* Kernel heap virtual base */
 #define KERNEL_HEAP_SIZE              0x10000000             /* 256MB initial heap */
 #define KERNEL_HEAP_PAGE_COUNT        (KERNEL_HEAP_SIZE / PAGE_SIZE_4KB)
 
@@ -81,6 +85,14 @@ typedef struct kernel_heap {
 
 /* Global kernel heap instance */
 static kernel_heap_t kernel_heap = {0};
+static uint32_t heap_diagnostics_enabled = 1;
+
+/* Upper bounds for each size class to aid diagnostics */
+static const uint32_t size_class_thresholds[15] = {
+    16, 32, 64, 128, 256, 512,
+    1024, 2048, 4096, 8192, 16384,
+    32768, 65536, 131072, 262144
+};
 
 /* ========================================================================
  * UTILITY FUNCTIONS
@@ -172,6 +184,7 @@ static void add_to_free_list(heap_block_t *block) {
     free_list_t *list = &kernel_heap.free_lists[size_class];
 
     block->magic = BLOCK_MAGIC_FREE;
+    block->flags = 0;
     block->checksum = calculate_checksum(block);
 
     /* Add to head of list */
@@ -224,6 +237,66 @@ static void remove_from_free_list(heap_block_t *block) {
 }
 
 /*
+ * Detach block from free list without altering allocation counters
+ */
+static void unlink_free_block(heap_block_t *block) {
+    if (!block || block->magic != BLOCK_MAGIC_FREE) {
+        return;
+    }
+
+    uint32_t size_class = get_size_class(block->size);
+    free_list_t *list = &kernel_heap.free_lists[size_class];
+
+    if (block->prev) {
+        block->prev->next = block->next;
+    } else if (list->head == block) {
+        list->head = block->next;
+    }
+
+    if (block->next) {
+        block->next->prev = block->prev;
+    }
+
+    if (list->count > 0) {
+        list->count--;
+    }
+
+    block->next = NULL;
+    block->prev = NULL;
+
+    if (kernel_heap.stats.free_blocks > 0) {
+        kernel_heap.stats.free_blocks--;
+    }
+}
+
+/*
+ * Reinsert block into appropriate free list as a free entry
+ */
+static void reinsert_free_block(heap_block_t *block) {
+    if (!block) {
+        return;
+    }
+
+    uint32_t size_class = get_size_class(block->size);
+    free_list_t *list = &kernel_heap.free_lists[size_class];
+
+    block->magic = BLOCK_MAGIC_FREE;
+    block->checksum = calculate_checksum(block);
+    block->flags = 0;
+
+    block->prev = NULL;
+    block->next = list->head;
+
+    if (list->head) {
+        list->head->prev = block;
+    }
+
+    list->head = block;
+    list->count++;
+    kernel_heap.stats.free_blocks++;
+}
+
+/*
  * Find suitable block in free lists
  */
 static heap_block_t *find_free_block(uint32_t size) {
@@ -261,21 +334,32 @@ static int expand_heap(uint32_t min_size) {
     kprint_decimal(pages_needed);
     kprint(" pages\n");
 
+    uint64_t expansion_start = kernel_heap.current_break;
+    uint32_t total_bytes = pages_needed * PAGE_SIZE_4KB;
+    uint32_t mapped_pages = 0;
+
     /* Allocate physical pages and map them */
     for (uint32_t i = 0; i < pages_needed; i++) {
         uint64_t phys_page = alloc_page_frame(0);
         if (!phys_page) {
             kprint("expand_heap: Failed to allocate physical page\n");
-            return -1;
+            goto rollback;
         }
 
-        /* TODO: Map virtual page to physical page */
-        /* For now, assume identity mapping in kernel space */
+        uint64_t virt_page = expansion_start + (uint64_t)i * PAGE_SIZE_4KB;
+
+        if (map_page_4kb(virt_page, phys_page, PAGE_KERNEL_RW) != 0) {
+            kprint("expand_heap: Failed to map heap page\n");
+            free_page_frame(phys_page);
+            goto rollback;
+        }
+
+        mapped_pages++;
     }
 
     /* Create large free block from new pages */
-    uint64_t new_block_addr = kernel_heap.current_break;
-    uint32_t new_block_size = pages_needed * PAGE_SIZE_4KB - sizeof(heap_block_t);
+    uint64_t new_block_addr = expansion_start;
+    uint32_t new_block_size = total_bytes - sizeof(heap_block_t);
 
     heap_block_t *new_block = (heap_block_t*)new_block_addr;
     new_block->magic = BLOCK_MAGIC_FREE;
@@ -286,14 +370,26 @@ static int expand_heap(uint32_t min_size) {
     new_block->checksum = calculate_checksum(new_block);
 
     /* Update heap break */
-    kernel_heap.current_break += pages_needed * PAGE_SIZE_4KB;
-    kernel_heap.stats.total_size += pages_needed * PAGE_SIZE_4KB;
+    kernel_heap.current_break += total_bytes;
+    kernel_heap.stats.total_size += total_bytes;
     kernel_heap.stats.free_size += new_block_size;
 
     /* Add to free lists */
     add_to_free_list(new_block);
 
     return 0;
+
+rollback:
+    for (uint32_t j = 0; j < mapped_pages; j++) {
+        uint64_t virt_page = expansion_start + (uint64_t)j * PAGE_SIZE_4KB;
+        uint64_t mapped_phys = virt_to_phys(virt_page);
+        if (mapped_phys) {
+            unmap_page(virt_page);
+            free_page_frame(mapped_phys);
+        }
+    }
+
+    return -1;
 }
 
 /* ========================================================================
@@ -384,6 +480,107 @@ void *kzalloc(size_t size) {
 }
 
 /*
+ * Find free block that sits immediately before the given block in memory
+ */
+static heap_block_t *find_adjacent_previous_block(heap_block_t *block) {
+    if (!block) {
+        return NULL;
+    }
+
+    uint8_t *block_addr = (uint8_t*)block;
+
+    for (uint32_t i = 0; i < 16; i++) {
+        heap_block_t *candidate = kernel_heap.free_lists[i].head;
+
+        while (candidate) {
+            if (candidate != block) {
+                uint8_t *candidate_end = (uint8_t*)candidate + sizeof(heap_block_t) + candidate->size;
+
+                if (candidate_end == block_addr) {
+                    return candidate;
+                }
+            }
+
+            candidate = candidate->next;
+        }
+    }
+
+    return NULL;
+}
+
+/*
+ * Find free block that sits immediately after the given block in memory
+ */
+static heap_block_t *find_adjacent_next_block(heap_block_t *block) {
+    if (!block) {
+        return NULL;
+    }
+
+    uint8_t *next_addr = (uint8_t*)block + sizeof(heap_block_t) + block->size;
+    uint64_t next_header_addr = (uint64_t)(uintptr_t)next_addr;
+
+    if (next_header_addr + sizeof(heap_block_t) > kernel_heap.current_break) {
+        return NULL;
+    }
+
+    heap_block_t *next = (heap_block_t*)next_addr;
+
+    if (!validate_block(next) || next->magic != BLOCK_MAGIC_FREE) {
+        return NULL;
+    }
+
+    return next;
+}
+
+/*
+ * Attempt to merge the supplied free block with adjacent free blocks
+ */
+static void coalesce_free_block(heap_block_t *block) {
+    if (!block || block->magic != BLOCK_MAGIC_FREE) {
+        return;
+    }
+
+    unlink_free_block(block);
+
+    heap_block_t *current = block;
+    uint32_t reclaimed_headers = 0;
+    const uint32_t header_size = sizeof(heap_block_t);
+
+    while (1) {
+        heap_block_t *prev = find_adjacent_previous_block(current);
+        if (prev) {
+            unlink_free_block(prev);
+            prev->size += header_size + current->size;
+            prev->flags = 0;
+            prev->checksum = calculate_checksum(prev);
+            reclaimed_headers++;
+            current = prev;
+            continue;
+        }
+
+        heap_block_t *next = find_adjacent_next_block(current);
+        if (next) {
+            unlink_free_block(next);
+            current->size += header_size + next->size;
+            current->flags = 0;
+            current->checksum = calculate_checksum(current);
+            reclaimed_headers++;
+            continue;
+        }
+
+        break;
+    }
+
+    current->flags = 0;
+    current->checksum = calculate_checksum(current);
+    reinsert_free_block(current);
+
+    if (reclaimed_headers > 0) {
+        kernel_heap.stats.free_size += (uint64_t)reclaimed_headers * header_size;
+    }
+}
+
+/*
  * Free memory to kernel heap
  */
 void kfree(void *ptr) {
@@ -404,10 +601,9 @@ void kfree(void *ptr) {
     kernel_heap.stats.free_size += block->size;
     kernel_heap.stats.free_count++;
 
-    /* Add to free list */
+    /* Add to free list and attempt coalescing */
     add_to_free_list(block);
-
-    /* TODO: Implement block coalescing for better memory utilization */
+    coalesce_free_block(block);
 }
 
 /* ========================================================================
@@ -465,6 +661,10 @@ void get_heap_stats(heap_stats_t *stats) {
     }
 }
 
+void kernel_heap_enable_diagnostics(int enable) {
+    heap_diagnostics_enabled = (enable != 0);
+}
+
 /*
  * Print heap statistics for debugging
  */
@@ -485,4 +685,81 @@ void print_heap_stats(void) {
     kprint("Frees: ");
     kprint_decimal(kernel_heap.stats.free_count);
     kprint("\n");
+
+    if (!heap_diagnostics_enabled) {
+        return;
+    }
+
+    kprint("Free blocks by class:\n");
+
+    uint64_t total_free_blocks = 0;
+    uint64_t largest_free_block = 0;
+
+    for (uint32_t i = 0; i < 16; i++) {
+        heap_block_t *cursor = kernel_heap.free_lists[i].head;
+        uint32_t class_count = 0;
+
+        while (cursor) {
+            class_count++;
+            total_free_blocks++;
+            if (cursor->size > largest_free_block) {
+                largest_free_block = cursor->size;
+            }
+            cursor = cursor->next;
+        }
+
+        if (class_count == 0) {
+            continue;
+        }
+
+        kprint("  ");
+        if (i < 15) {
+            kprint("<= ");
+            kprint_decimal((uint64_t)size_class_thresholds[i]);
+        } else {
+            kprint("> ");
+            kprint_decimal((uint64_t)size_class_thresholds[14]);
+        }
+        kprint(": ");
+        kprint_decimal((uint64_t)class_count);
+        kprint(" blocks\n");
+    }
+
+    kprint("Total free blocks: ");
+    kprint_decimal(total_free_blocks);
+    kprint("\n");
+
+    kprint("Largest free block: ");
+    kprint_decimal(largest_free_block);
+    kprint(" bytes\n");
+
+    if (total_free_blocks > 0) {
+        uint64_t average_free = 0;
+        if (kernel_heap.stats.free_size > 0) {
+            average_free = kernel_heap.stats.free_size / total_free_blocks;
+        }
+        kprint("Average free block: ");
+        kprint_decimal(average_free);
+        kprint(" bytes\n");
+    }
+
+    if (kernel_heap.stats.free_size > 0) {
+        uint64_t fragmented_bytes = kernel_heap.stats.free_size;
+        if (largest_free_block < fragmented_bytes) {
+            fragmented_bytes -= largest_free_block;
+        } else {
+            fragmented_bytes = 0;
+        }
+
+        uint64_t fragmentation_percent = 0;
+        if (kernel_heap.stats.free_size > 0) {
+            fragmentation_percent = (fragmented_bytes * 100) / kernel_heap.stats.free_size;
+        }
+
+        kprint("Fragmented bytes: ");
+        kprint_decimal(fragmented_bytes);
+        kprint(" (");
+        kprint_decimal(fragmentation_percent);
+        kprint("%)\n");
+    }
 }

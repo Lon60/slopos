@@ -92,10 +92,23 @@ typedef struct task {
     uint64_t total_runtime;              /* Total CPU time used */
     uint64_t creation_time;              /* Task creation timestamp */
     uint32_t yield_count;                /* Number of voluntary yields */
+    uint64_t last_run_timestamp;         /* Timestamp when task was last scheduled */
+    uint32_t waiting_on_task_id;         /* Task this task is waiting on, if any */
 
     /* Task relationships */
     struct task *next;                   /* Next task in scheduler queue */
     struct task *prev;                   /* Previous task in scheduler queue */
 } task_t;
+
+/*
+ * Scheduler instrumentation helpers
+ */
+void task_record_context_switch(task_t *from, task_t *to, uint64_t timestamp);
+void task_record_yield(task_t *task);
+uint64_t task_get_total_yields(void);
+const char *task_state_to_string(uint8_t state);
+
+typedef void (*task_iterate_cb)(task_t *task, void *context);
+void task_iterate_active(task_iterate_cb callback, void *context);
 
 #endif /* SCHED_TASK_H */

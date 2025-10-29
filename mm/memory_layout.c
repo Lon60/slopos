@@ -8,25 +8,14 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/limine_protocol.h"
+#include "memory_layout.h"
 
 /* ========================================================================
  * MEMORY LAYOUT CONSTANTS AND STRUCTURES
  * ======================================================================== */
 
-/* Kernel memory layout structure */
-typedef struct {
-    uint64_t kernel_start_phys;     /* Physical start of kernel */
-    uint64_t kernel_end_phys;       /* Physical end of kernel */
-    uint64_t kernel_start_virt;     /* Virtual start of kernel */
-    uint64_t kernel_end_virt;       /* Virtual end of kernel */
-    uint64_t kernel_heap_start;     /* Start of kernel heap */
-    uint64_t kernel_heap_end;       /* End of kernel heap */
-    uint64_t kernel_stack_start;    /* Start of kernel stack */
-    uint64_t kernel_stack_end;      /* End of kernel stack */
-    uint64_t identity_map_end;      /* End of identity mapping */
-    uint64_t user_space_start;      /* Start of user space */
-    uint64_t user_space_end;        /* End of user space */
-} kernel_memory_layout_t;
+/* Kernel memory layout structure defined in header */
 
 /* Memory region types */
 typedef enum {
@@ -58,7 +47,7 @@ typedef struct {
  * ======================================================================== */
 
 /* Current kernel memory layout */
-static kernel_memory_layout_t kernel_layout = {0};
+static struct kernel_memory_layout kernel_layout = {0};
 
 /* Memory region tracking */
 static memory_region_t memory_regions[MAX_MEMORY_REGIONS];
@@ -175,14 +164,27 @@ void setup_kernel_memory_regions(void) {
  * MEMORY LAYOUT QUERIES
  * ======================================================================== */
 
-/*
- * Get kernel memory layout information
- */
-const kernel_memory_layout_t *get_kernel_memory_layout(void) {
+const struct kernel_memory_layout *get_kernel_memory_layout(void) {
     if (!layout_initialized) {
         return NULL;
     }
     return &kernel_layout;
+}
+
+uint64_t mm_get_kernel_phys_start(void) {
+    return kernel_layout.kernel_start_phys;
+}
+
+uint64_t mm_get_kernel_phys_end(void) {
+    return kernel_layout.kernel_end_phys;
+}
+
+uint64_t mm_get_kernel_virt_start(void) {
+    return kernel_layout.kernel_start_virt;
+}
+
+uint64_t mm_get_identity_map_limit(void) {
+    return kernel_layout.identity_map_end;
 }
 
 /*
@@ -222,27 +224,10 @@ int is_user_address(uint64_t addr) {
     return (addr >= kernel_layout.user_space_start && addr < kernel_layout.user_space_end);
 }
 
-/*
- * Convert physical address to virtual address
- */
-uint64_t phys_to_virt(uint64_t phys_addr) {
-    /* For kernel addresses, add higher-half offset */
-    if (phys_addr >= kernel_layout.kernel_start_phys &&
-        phys_addr < kernel_layout.kernel_end_phys) {
-        return phys_addr - kernel_layout.kernel_start_phys + kernel_layout.kernel_start_virt;
-    }
+/* ========================================================================
+ * ADDRESS TRANSLATION HELPERS
+ * ======================================================================== */
 
-    /* For identity-mapped region, address is the same */
-    if (phys_addr < kernel_layout.identity_map_end) {
-        return phys_addr;
-    }
-
-    /* For other addresses, add higher-half offset */
-    return phys_addr + KERNEL_VIRTUAL_BASE;
-}
-
-/* Forward declaration - implemented in paging.c */
-extern uint64_t virt_to_phys(uint64_t virt_addr);
 
 /* ========================================================================
  * MEMORY REGION MANAGEMENT

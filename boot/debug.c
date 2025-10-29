@@ -5,6 +5,7 @@
 
 #include "debug.h"
 #include "../drivers/serial.h"
+#include "../drivers/irq.h"
 #include "idt.h"
 #include <stddef.h>
 
@@ -28,6 +29,12 @@ static int symbol_count = 0;
 #define MAX_MEMORY_REGIONS 64
 static struct memory_region memory_regions[MAX_MEMORY_REGIONS];
 static int memory_region_count = 0;
+
+static inline uint64_t debug_read_tsc(void) {
+    uint32_t low, high;
+    __asm__ volatile ("rdtsc" : "=a" (low), "=d" (high));
+    return ((uint64_t)high << 32) | low;
+}
 
 /*
  * Initialize debug subsystem
@@ -80,12 +87,29 @@ uint32_t debug_get_flags(void) {
 }
 
 /*
- * Get current timestamp (simple counter for now)
+ * Get current timestamp using timer ticks with TSC fallback
  */
 uint64_t debug_get_timestamp(void) {
-    // Simple timestamp - could be improved with actual timer
-    static uint64_t counter = 0;
-    return ++counter;
+    static uint64_t monotonic_time = 0;
+    static uint64_t last_tick_count = 0;
+
+    uint64_t tick_count = irq_get_timer_ticks();
+    if (tick_count > last_tick_count) {
+        monotonic_time += tick_count - last_tick_count;
+        last_tick_count = tick_count;
+    }
+
+    if (tick_count != 0) {
+        return monotonic_time;
+    }
+
+    uint64_t tsc = debug_read_tsc();
+    if (tsc <= monotonic_time) {
+        tsc = monotonic_time + 1;
+    }
+
+    monotonic_time = tsc;
+    return monotonic_time;
 }
 
 /*
@@ -93,9 +117,17 @@ uint64_t debug_get_timestamp(void) {
  */
 void debug_print_timestamp(void) {
     uint64_t ts = debug_get_timestamp() - debug_ctx.boot_timestamp;
-    kprint("[");
-    kprint_dec(ts);
-    kprint("] ");
+    kprint("[+");
+    kprint_decimal(ts);
+    kprint(" ticks] ");
+}
+
+/*
+ * Ensure all buffered debug output reaches the serial line
+ */
+void debug_flush(void) {
+    uint16_t port = serial_get_kernel_output();
+    serial_flush(port);
 }
 
 /*

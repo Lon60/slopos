@@ -1,3 +1,8 @@
+#include <stdint.h>
+#include <stddef.h>
+#include "../boot/constants.h"
+#include "../drivers/serial.h"
+#include "phys_virt.h"
 /*
  * SlopOS Memory Management - Buddy Allocator for Physical Memory
  * Implements buddy allocation algorithm for efficient physical memory management
@@ -8,6 +13,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -70,6 +76,7 @@ typedef struct buddy_zone {
 typedef struct buddy_allocator {
     buddy_block_t *blocks;        /* Array of block descriptors */
     uint32_t total_blocks;        /* Total number of blocks */
+    uint32_t next_block_index;    /* Next free descriptor slot */
     buddy_zone_t zones[MAX_MEMORY_REGIONS];  /* Memory zones */
     uint32_t num_zones;           /* Number of zones */
     uint64_t total_memory;        /* Total managed memory */
@@ -376,6 +383,11 @@ uint64_t buddy_alloc_pages(uint32_t num_pages, uint32_t flags) {
         if (block_index != BUDDY_MAX_BLOCKS) {
             uint64_t phys_addr = block_index_to_phys(block_index);
 
+            if ((flags & BUDDY_ALLOC_ZERO) && mm_zero_physical_page(phys_addr) != 0) {
+                kprint("buddy_alloc_pages: Failed to zero page\n");
+                return 0;
+            }
+
             buddy_allocator.allocation_count++;
             buddy_allocator.free_memory -= required_pages * BUDDY_PAGE_SIZE;
 
@@ -450,6 +462,7 @@ int init_buddy_allocator(buddy_block_t *block_array, uint32_t max_blocks) {
 
     buddy_allocator.blocks = block_array;
     buddy_allocator.total_blocks = max_blocks;
+    buddy_allocator.next_block_index = 0;
     buddy_allocator.num_zones = 0;
     buddy_allocator.total_memory = 0;
     buddy_allocator.free_memory = 0;
@@ -502,11 +515,18 @@ int buddy_add_zone(uint64_t start_addr, uint64_t size, uint8_t zone_type) {
     buddy_zone_t *zone = &buddy_allocator.zones[buddy_allocator.num_zones];
     zone->start_addr = aligned_start;
     zone->size = aligned_size;
-    zone->start_block = buddy_allocator.num_zones * (BUDDY_MAX_BLOCKS / MAX_MEMORY_REGIONS);
+    zone->start_block = buddy_allocator.next_block_index;
     zone->num_blocks = num_pages;
     zone->zone_type = zone_type;
     zone->free_pages = 0;
     zone->allocated_pages = 0;
+
+    uint64_t new_next_index = (uint64_t)buddy_allocator.next_block_index + (uint64_t)num_pages;
+    if (new_next_index > buddy_allocator.total_blocks) {
+        kprint("buddy_add_zone: Not enough block descriptors for zone\n");
+        return -1;
+    }
+    buddy_allocator.next_block_index = (uint32_t)new_next_index;
 
     /* Initialize free lists */
     for (uint32_t i = 0; i <= BUDDY_MAX_ORDER; i++) {
@@ -519,10 +539,9 @@ int buddy_add_zone(uint64_t start_addr, uint64_t size, uint8_t zone_type) {
         uint32_t remaining_pages = num_pages;
         uint32_t current_block = zone->start_block;
 
-        while (remaining_pages > 0 && current_block < buddy_allocator.total_blocks) {
-            /* Find largest possible block */
+        while (remaining_pages > 0 && current_block < zone->start_block + zone->num_blocks) {
             uint32_t order = BUDDY_MAX_ORDER;
-            while ((1U << order) > remaining_pages) {
+            while ((1U << order) > remaining_pages && order > 0) {
                 order--;
             }
 
@@ -560,4 +579,12 @@ void get_buddy_stats(uint64_t *total_memory, uint64_t *free_memory,
     if (free_memory) *free_memory = buddy_allocator.free_memory;
     if (allocations) *allocations = buddy_allocator.allocation_count;
     if (frees) *frees = buddy_allocator.free_count;
+}
+
+size_t buddy_allocator_block_descriptor_size(void) {
+    return sizeof(buddy_block_t);
+}
+
+uint32_t buddy_allocator_max_supported_blocks(void) {
+    return BUDDY_MAX_BLOCKS;
 }

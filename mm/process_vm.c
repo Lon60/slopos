@@ -8,11 +8,17 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/integration.h"
+#include "kernel_heap.h"
+#include "paging.h"
+#include "phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
 uint64_t alloc_page_frame(uint32_t flags);
 int free_page_frame(uint64_t phys_addr);
+int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
+int unmap_page(uint64_t vaddr);
 
 /* ========================================================================
  * PROCESS VIRTUAL MEMORY CONSTANTS
@@ -47,20 +53,6 @@ typedef struct vm_area {
     uint32_t ref_count;           /* Reference count for sharing */
     struct vm_area *next;         /* Next VMA in process */
 } vm_area_t;
-
-/* Page table structure reference (from paging.c) */
-typedef struct {
-    uint64_t entries[ENTRIES_PER_PAGE_TABLE];
-} __attribute__((aligned(PAGE_ALIGN))) page_table_t;
-
-/* Process page directory structure (from paging.c) */
-typedef struct process_page_dir {
-    page_table_t *pml4;                    /* Process PML4 table */
-    uint64_t pml4_phys;                    /* Physical address of PML4 */
-    uint32_t ref_count;                    /* Reference count for sharing */
-    uint32_t process_id;                   /* Process ID for debugging */
-    struct process_page_dir *next;         /* Link for process list */
-} process_page_dir_t;
 
 /* Process virtual memory descriptor */
 typedef struct process_vm {
@@ -99,17 +91,12 @@ static vm_manager_t vm_manager = {0};
  * Returns pointer to VMA, NULL on failure
  */
 static vm_area_t *alloc_vma(void) {
-    /* For now, use static allocation from a pool */
-    /* TODO: Implement dynamic allocation once kernel heap is ready */
-    static vm_area_t vma_pool[MAX_PROCESSES * 8];
-    static uint32_t vma_pool_index = 0;
-
-    if (vma_pool_index >= (MAX_PROCESSES * 8)) {
-        kprint("alloc_vma: VMA pool exhausted\n");
+    vm_area_t *vma = (vm_area_t *)kmalloc(sizeof(vm_area_t));
+    if (!vma) {
+        kprint("alloc_vma: Failed to allocate VMA structure\n");
         return NULL;
     }
 
-    vm_area_t *vma = &vma_pool[vma_pool_index++];
     vma->start_addr = 0;
     vma->end_addr = 0;
     vma->flags = 0;
@@ -125,8 +112,69 @@ static vm_area_t *alloc_vma(void) {
 static void free_vma(vm_area_t *vma) {
     if (!vma) return;
 
-    /* For static allocation, just mark as unused */
-    vma->ref_count = 0;
+    kfree(vma);
+}
+
+static int map_user_range(uint64_t start_addr, uint64_t end_addr, uint64_t map_flags, uint32_t *pages_mapped_out) {
+    if (start_addr & (PAGE_SIZE_4KB - 1) || end_addr & (PAGE_SIZE_4KB - 1) || end_addr <= start_addr) {
+        kprint("map_user_range: Unaligned or invalid range\n");
+        return -1;
+    }
+
+    uint64_t current = start_addr;
+    uint32_t mapped = 0;
+
+    while (current < end_addr) {
+        uint64_t phys = alloc_page_frame(0);
+        if (!phys) {
+            kprint("map_user_range: Physical allocation failed\n");
+            goto rollback;
+        }
+
+        if (map_page_4kb(current, phys, map_flags) != 0) {
+            kprint("map_user_range: Virtual mapping failed\n");
+            free_page_frame(phys);
+            goto rollback;
+        }
+
+        mapped++;
+        current += PAGE_SIZE_4KB;
+    }
+
+    if (pages_mapped_out) {
+        *pages_mapped_out = mapped;
+    }
+    return 0;
+
+rollback:
+    while (mapped > 0) {
+        current -= PAGE_SIZE_4KB;
+        uint64_t phys = mm_virt_to_phys(current);
+        if (phys) {
+            unmap_page(current);
+            free_page_frame(phys);
+        }
+        mapped--;
+    }
+
+    if (pages_mapped_out) {
+        *pages_mapped_out = 0;
+    }
+    return -1;
+}
+
+static void unmap_user_range(uint64_t start_addr, uint64_t end_addr) {
+    if (end_addr <= start_addr) {
+        return;
+    }
+
+    for (uint64_t addr = start_addr; addr < end_addr; addr += PAGE_SIZE_4KB) {
+        uint64_t phys = mm_virt_to_phys(addr);
+        if (phys) {
+            unmap_page(addr);
+            free_page_frame(phys);
+        }
+    }
 }
 
 /*
@@ -139,6 +187,18 @@ static process_vm_t *find_process_vm(uint32_t process_id) {
         }
     }
     return NULL;
+}
+
+/*
+ * Expose process page directory to other subsystems
+ */
+process_page_dir_t *process_vm_get_page_dir(uint32_t process_id) {
+    process_vm_t *process = find_process_vm(process_id);
+    if (!process) {
+        return NULL;
+    }
+
+    return process->page_dir;
 }
 
 /* ========================================================================
@@ -186,6 +246,7 @@ static int remove_vma_from_process(process_vm_t *process, uint64_t start, uint64
         if (vma->start_addr == start && vma->end_addr == end) {
             /* Remove from list */
             *current = vma->next;
+            vma->next = NULL;
             free_vma(vma);
             return 0;
         }
@@ -194,24 +255,6 @@ static int remove_vma_from_process(process_vm_t *process, uint64_t start, uint64
     }
 
     return -1;  /* VMA not found */
-}
-
-/*
- * Check if a virtual address range is valid for a process
- */
-static int is_valid_user_range(uint64_t start, uint64_t end) {
-    /* Ensure addresses are in user space */
-    if (start >= KERNEL_VIRTUAL_BASE || end >= KERNEL_VIRTUAL_BASE) {
-        return 0;
-    }
-
-    /* Ensure addresses are page-aligned */
-    if ((start & (PAGE_SIZE_4KB - 1)) || (end & (PAGE_SIZE_4KB - 1))) {
-        return 0;
-    }
-
-    /* Ensure valid range */
-    return start < end;
 }
 
 /* ========================================================================
@@ -235,13 +278,41 @@ uint32_t create_process_vm(void) {
         return INVALID_PROCESS_ID;
     }
 
+    /* Prepare new page table */
+    page_table_t *pml4 = (page_table_t *)mm_phys_to_virt(pml4_phys);
+    if (!pml4) {
+        kprint("create_process_vm: No HHDM/identity map available for PML4\n");
+        free_page_frame(pml4_phys);
+        return INVALID_PROCESS_ID;
+    }
+    for (uint32_t i = 0; i < ENTRIES_PER_PAGE_TABLE; i++) {
+        pml4->entries[i] = 0;
+    }
+
     /* Find free process slot */
     process_vm_t *process = &vm_manager.processes[vm_manager.num_processes];
     uint32_t process_id = vm_manager.next_process_id++;
 
+    /* Allocate process page directory descriptor */
+    process_page_dir_t *page_dir = (process_page_dir_t*)kmalloc(sizeof(process_page_dir_t));
+    if (!page_dir) {
+        kprint("create_process_vm: Failed to allocate page directory\n");
+        free_page_frame(pml4_phys);
+        return INVALID_PROCESS_ID;
+    }
+
+    page_dir->pml4 = pml4;
+    page_dir->pml4_phys = pml4_phys;
+    page_dir->ref_count = 1;
+    page_dir->process_id = process_id;
+    page_dir->next = NULL;
+
+    /* Inherit kernel mappings */
+    paging_copy_kernel_mappings(page_dir->pml4);
+
     /* Initialize process VM descriptor */
     process->process_id = process_id;
-    process->page_dir = NULL;  /* TODO: Create process_page_dir_t */
+    process->page_dir = page_dir;
     process->vma_list = NULL;
     process->code_start = PROCESS_CODE_START;
     process->data_start = PROCESS_DATA_START;
@@ -260,6 +331,21 @@ uint32_t create_process_vm(void) {
                        VM_FLAG_READ | VM_FLAG_WRITE | VM_FLAG_USER);
     add_vma_to_process(process, process->stack_start, process->stack_end,
                        VM_FLAG_READ | VM_FLAG_WRITE | VM_FLAG_USER);
+
+    /* Map initial stack pages eagerly */
+    uint64_t stack_map_flags = PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE;
+    uint32_t stack_pages = 0;
+    if (map_user_range(process->stack_start, process->stack_end, stack_map_flags, &stack_pages) != 0) {
+        kprint("create_process_vm: Failed to map process stack\n");
+        unmap_user_range(process->stack_start, process->stack_end);
+        free_page_frame(process->page_dir->pml4_phys);
+        kfree(process->page_dir);
+        process->page_dir = NULL;
+        process->process_id = INVALID_PROCESS_ID;
+        return INVALID_PROCESS_ID;
+    }
+
+    process->total_pages += stack_pages;
 
     /* Add to global list */
     vm_manager.process_list = process;
@@ -290,14 +376,22 @@ int destroy_process_vm(uint32_t process_id) {
     /* Free all VMAs */
     vm_area_t *vma = process->vma_list;
     while (vma) {
+        if (vma->flags & VM_FLAG_USER) {
+            unmap_user_range(vma->start_addr, vma->end_addr);
+        }
         vm_area_t *next = vma->next;
         free_vma(vma);
         vma = next;
     }
+    process->vma_list = NULL;
 
-    /* Free page directory physical page */
-    if (process->page_dir && process->page_dir->pml4_phys) {
-        free_page_frame(process->page_dir->pml4_phys);
+    /* Free page directory structures */
+    if (process->page_dir) {
+        if (process->page_dir->pml4_phys) {
+            free_page_frame(process->page_dir->pml4_phys);
+        }
+        kfree(process->page_dir);
+        process->page_dir = NULL;
     }
 
     /* Remove from process list */
@@ -315,6 +409,8 @@ int destroy_process_vm(uint32_t process_id) {
 
     /* Mark process slot as free */
     process->process_id = INVALID_PROCESS_ID;
+    process->vma_list = NULL;
+    process->next = NULL;
     vm_manager.num_processes--;
 
     return 0;
@@ -346,15 +442,32 @@ uint64_t process_vm_alloc(uint32_t process_id, uint64_t size, uint32_t flags) {
         return 0;
     }
 
-    /* Update heap end */
-    process->heap_end = end_addr;
+    uint32_t protection_flags = flags & (VM_FLAG_READ | VM_FLAG_WRITE | VM_FLAG_EXEC);
 
-    /* Add VMA for this allocation */
-    if (add_vma_to_process(process, start_addr, end_addr, flags) != 0) {
-        process->heap_end = start_addr;  /* Rollback */
+    if (protection_flags == 0) {
+        protection_flags = VM_FLAG_READ | VM_FLAG_WRITE;
+    }
+
+    uint64_t map_flags = PAGE_PRESENT | PAGE_USER;
+    if (protection_flags & VM_FLAG_WRITE) {
+        map_flags |= PAGE_WRITABLE;
+    }
+
+    uint32_t pages_mapped = 0;
+    if (map_user_range(start_addr, end_addr, map_flags, &pages_mapped) != 0) {
         return 0;
     }
 
+    process->heap_end = end_addr;
+
+    if (add_vma_to_process(process, start_addr, end_addr, protection_flags | VM_FLAG_USER) != 0) {
+        kprint("process_vm_alloc: Failed to record VMA\n");
+        unmap_user_range(start_addr, end_addr);
+        process->heap_end = start_addr;
+        return 0;
+    }
+
+    process->total_pages += pages_mapped;
     return start_addr;
 }
 

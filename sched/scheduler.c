@@ -7,19 +7,16 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/constants.h"
+#include "../boot/debug.h"
 #include "../drivers/serial.h"
-
-/* Include task and scheduler definitions */
-#include "task.h"
-
-/* Forward declarations from task.c */
-extern task_t *task_get_current(void);
-extern void task_set_current(task_t *task);
-extern int task_set_state(uint32_t task_id, uint8_t new_state);
-extern int task_get_info(uint32_t task_id, task_t **task_info);
+#include "../mm/paging.h"
+#include "scheduler.h"
 
 /* Forward declarations from context_switch.s */
 extern void context_switch(void *old_context, void *new_context);
+
+/* Forward declarations from process_vm.c */
+extern process_page_dir_t *process_vm_get_page_dir(uint32_t process_id);
 
 /* Task states from task.c */
 #define TASK_STATE_INVALID            0
@@ -183,16 +180,13 @@ static int ready_queue_remove(ready_queue_t *queue, task_t *task) {
  */
 int schedule_task(task_t *task) {
     if (!task) {
-        kprint("schedule_task: Invalid task pointer\n");
         return -1;
     }
 
     if (ready_queue_enqueue(&scheduler.ready_queue, task) != 0) {
-        kprint("schedule_task: Ready queue full\n");
         return -1;
     }
 
-    kprint("Scheduled task for execution\n");
     return 0;
 }
 
@@ -239,26 +233,30 @@ static task_t *select_next_task(void) {
  */
 static void switch_to_task(task_t *new_task) {
     if (!new_task) {
-        kprint("switch_to_task: Invalid task\n");
         return;
     }
 
     task_t *old_task = scheduler.current_task;
 
-    kprint("Context switch: ");
-    if (old_task) {
-        kprint_decimal(old_task->task_id);
-    } else {
-        kprint("kernel");
+    if (old_task == new_task) {
+        return;
     }
-    kprint(" -> ");
-    kprint_decimal(new_task->task_id);
-    kprint("\n");
+
+    uint64_t timestamp = debug_get_timestamp();
+    task_record_context_switch(old_task, new_task, timestamp);
 
     /* Update scheduler state */
     scheduler.current_task = new_task;
     task_set_current(new_task);
     scheduler.total_switches++;
+
+    /* Ensure CR3 matches the task's process address space */
+    if (new_task->process_id != INVALID_PROCESS_ID) {
+        process_page_dir_t *page_dir = process_vm_get_page_dir(new_task->process_id);
+        if (page_dir && page_dir->pml4_phys) {
+            new_task->context.cr3 = page_dir->pml4_phys;
+        }
+    }
 
     /* Perform actual context switch */
     if (old_task) {
@@ -301,7 +299,6 @@ void schedule(void) {
     /* Select next task to run */
     task_t *next_task = select_next_task();
     if (!next_task) {
-        kprint("schedule: No runnable tasks available\n");
         return;
     }
 
@@ -316,14 +313,9 @@ void schedule(void) {
 void yield(void) {
     scheduler.total_yields++;
 
-    kprint("Task yield: ");
     if (scheduler.current_task) {
-        kprint_decimal(scheduler.current_task->task_id);
-        scheduler.current_task->yield_count++;
-    } else {
-        kprint("kernel");
+        task_record_yield(scheduler.current_task);
     }
-    kprint("\n");
 
     /* Trigger rescheduling */
     schedule();
@@ -338,16 +330,40 @@ void block_current_task(void) {
         return;
     }
 
-    kprint("Blocking task ");
-    kprint_decimal(current->task_id);
-    kprint("\n");
-
     /* Mark task as blocked */
     task_set_state(current->task_id, TASK_STATE_BLOCKED);
 
     /* Remove from ready queue and schedule next task */
     unschedule_task(current);
     schedule();
+}
+
+int task_wait_for(uint32_t task_id) {
+    task_t *current = scheduler.current_task;
+    if (!current) {
+        return -1;
+    }
+
+    if (task_id == INVALID_TASK_ID || current->task_id == task_id) {
+        return -1;
+    }
+
+    task_t *target = NULL;
+    if (task_get_info(task_id, &target) != 0 || !target) {
+        current->waiting_on_task_id = INVALID_TASK_ID;
+        return 0; /* Target already gone */
+    }
+
+    if (target->state == TASK_STATE_INVALID || target->task_id == INVALID_TASK_ID) {
+        current->waiting_on_task_id = INVALID_TASK_ID;
+        return 0;
+    }
+
+    current->waiting_on_task_id = task_id;
+    block_current_task();
+
+    current->waiting_on_task_id = INVALID_TASK_ID;
+    return 0;
 }
 
 /*
@@ -358,15 +374,43 @@ int unblock_task(task_t *task) {
         return -1;
     }
 
-    kprint("Unblocking task ");
-    kprint_decimal(task->task_id);
-    kprint("\n");
-
     /* Mark task as ready */
     task_set_state(task->task_id, TASK_STATE_READY);
 
     /* Add back to ready queue */
     return schedule_task(task);
+}
+
+/*
+ * Terminate the currently running task and hand control to the scheduler
+ */
+void scheduler_task_exit(void) {
+    task_t *current = scheduler.current_task;
+
+    if (!current) {
+        kprintln("scheduler_task_exit: No current task");
+        schedule();
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    uint64_t timestamp = debug_get_timestamp();
+    task_record_context_switch(current, NULL, timestamp);
+
+    if (task_terminate((uint32_t)-1) != 0) {
+        kprintln("scheduler_task_exit: Failed to terminate current task");
+    }
+
+    scheduler.current_task = NULL;
+    task_set_current(NULL);
+
+    schedule();
+
+    kprintln("scheduler_task_exit: Schedule returned unexpectedly");
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
 }
 
 /* ========================================================================
@@ -378,8 +422,6 @@ int unblock_task(task_t *task) {
  */
 static void idle_task_function(void *arg) {
     (void)arg;  /* Unused parameter */
-
-    kprint("Idle task started\n");
 
     while (1) {
         /* Simple idle loop - could implement power management here */
@@ -400,8 +442,6 @@ static void idle_task_function(void *arg) {
  * Initialize the scheduler system
  */
 int init_scheduler(void) {
-    kprint("Initializing cooperative scheduler\n");
-
     /* Initialize ready queue */
     ready_queue_init(&scheduler.ready_queue);
 
@@ -416,7 +456,6 @@ int init_scheduler(void) {
     scheduler.idle_time = 0;
     scheduler.schedule_calls = 0;
 
-    kprint("Scheduler initialized\n");
     return 0;
 }
 
@@ -433,23 +472,16 @@ int create_idle_task(void) {
                                        3, 0x02);  /* Low priority, kernel mode */
 
     if (idle_task_id == INVALID_TASK_ID) {
-        kprint("create_idle_task: Failed to create idle task\n");
         return -1;
     }
 
     /* Get idle task pointer */
     task_t *idle_task;
     if (task_get_info(idle_task_id, &idle_task) != 0) {
-        kprint("create_idle_task: Failed to get idle task info\n");
         return -1;
     }
 
     scheduler.idle_task = idle_task;
-
-    kprint("Idle task created with ID ");
-    kprint_decimal(idle_task_id);
-    kprint("\n");
-
     return 0;
 }
 
@@ -458,11 +490,8 @@ int create_idle_task(void) {
  */
 int start_scheduler(void) {
     if (scheduler.enabled) {
-        kprint("start_scheduler: Scheduler already running\n");
         return -1;
     }
-
-    kprint("Starting cooperative scheduler\n");
 
     scheduler.enabled = 1;
 
@@ -473,7 +502,6 @@ int start_scheduler(void) {
         /* Start with idle task */
         switch_to_task(scheduler.idle_task);
     } else {
-        kprint("start_scheduler: No tasks to run\n");
         return -1;
     }
 
@@ -484,8 +512,20 @@ int start_scheduler(void) {
  * Stop the scheduler
  */
 void stop_scheduler(void) {
-    kprint("Stopping scheduler\n");
     scheduler.enabled = 0;
+}
+
+/*
+ * Prepare scheduler for shutdown and clear scheduling state
+ */
+void scheduler_shutdown(void) {
+    if (scheduler.enabled) {
+        stop_scheduler();
+    }
+
+    ready_queue_init(&scheduler.ready_queue);
+    scheduler.current_task = NULL;
+    scheduler.idle_task = NULL;
 }
 
 /* ========================================================================

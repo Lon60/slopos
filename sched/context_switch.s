@@ -216,16 +216,17 @@ task_entry_wrapper:
     # At this point, the task entry point is in %rdi (from context setup)
     # and the task argument is already in %rsi
 
-    # Call the task entry function
-    # Entry point is in rdi, argument is in rsi (already set up by init_task_context)
-    callq   *%rdi
+    # Preserve entry point and move argument into ABI position
+    movq    %rdi, %rax              # Save entry function pointer
+    movq    %rsi, %rdi              # Move argument into first parameter register
 
-    # If task returns, terminate it
-    # Call task_terminate with current task ID
-    # This is a fallback - tasks should not normally return
-    movq    $-1, %rdi               # Use -1 to indicate current task
-    # Call task termination function (would need to be implemented)
-    # For now, just halt
+    # Call the task entry function
+    callq   *%rax
+
+    # If task returns, hand control back to the scheduler to terminate
+    callq   scheduler_task_exit
+
+    # Should never reach here, but halt defensively
     hlt
 
 #

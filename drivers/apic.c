@@ -6,10 +6,15 @@
 #include "apic.h"
 #include "serial.h"
 
+// Limine boot protocol exports
+extern uint64_t get_hhdm_offset(void);
+extern int is_hhdm_available(void);
+
 // Global APIC state
 static int apic_available = 0;
 static int x2apic_available = 0;
 static uint64_t apic_base_address = 0;
+static uint64_t apic_base_physical = 0;
 static int apic_enabled = 0;
 
 /*
@@ -65,11 +70,24 @@ int apic_detect(void) {
 
         // Get APIC base address from MSR
         uint64_t apic_base_msr = read_msr(MSR_APIC_BASE);
-        apic_base_address = apic_base_msr & APIC_BASE_ADDR_MASK;
+        apic_base_physical = apic_base_msr & APIC_BASE_ADDR_MASK;
 
-        kprint("APIC: Base address: ");
-        kprint_hex(apic_base_address);
+        kprint("APIC: Physical base: ");
+        kprint_hex(apic_base_physical);
         kprintln("");
+
+        if (is_hhdm_available()) {
+            uint64_t hhdm_offset = get_hhdm_offset();
+            apic_base_address = apic_base_physical + hhdm_offset;
+
+            kprint("APIC: Virtual base (HHDM): ");
+            kprint_hex(apic_base_address);
+            kprintln("");
+        } else {
+            kprintln("APIC: ERROR - HHDM not available, cannot map APIC registers");
+            apic_available = 0;
+            return 0;
+        }
 
         kprint("APIC: MSR flags: ");
         if (apic_base_msr & APIC_BASE_BSP) kprint("BSP ");
@@ -156,6 +174,10 @@ int apic_is_bsp(void) {
     if (!apic_available) return 0;
     uint64_t apic_base_msr = read_msr(MSR_APIC_BASE);
     return (apic_base_msr & APIC_BASE_BSP) != 0;
+}
+
+int apic_is_enabled(void) {
+    return apic_enabled;
 }
 
 /*
@@ -286,10 +308,17 @@ uint64_t apic_get_base_address(void) {
 void apic_set_base_address(uint64_t base) {
     if (!apic_available) return;
 
+    uint64_t masked_base = base & APIC_BASE_ADDR_MASK;
     uint64_t apic_base_msr = read_msr(MSR_APIC_BASE);
-    apic_base_msr = (apic_base_msr & ~APIC_BASE_ADDR_MASK) | (base & APIC_BASE_ADDR_MASK);
+    apic_base_msr = (apic_base_msr & ~APIC_BASE_ADDR_MASK) | masked_base;
     write_msr(MSR_APIC_BASE, apic_base_msr);
-    apic_base_address = base;
+
+    apic_base_physical = masked_base;
+    if (is_hhdm_available()) {
+        apic_base_address = apic_base_physical + get_hhdm_offset();
+    } else {
+        apic_base_address = 0;
+    }
 }
 
 /*
@@ -299,7 +328,7 @@ uint32_t apic_read_register(uint32_t reg) {
     if (!apic_available || apic_base_address == 0) return 0;
 
     // Memory-mapped access to APIC registers
-    volatile uint32_t *apic_reg = (volatile uint32_t *)(apic_base_address + reg);
+    volatile uint32_t *apic_reg = (volatile uint32_t *)(uintptr_t)(apic_base_address + reg);
     return *apic_reg;
 }
 
@@ -310,7 +339,7 @@ void apic_write_register(uint32_t reg, uint32_t value) {
     if (!apic_available || apic_base_address == 0) return;
 
     // Memory-mapped access to APIC registers
-    volatile uint32_t *apic_reg = (volatile uint32_t *)(apic_base_address + reg);
+    volatile uint32_t *apic_reg = (volatile uint32_t *)(uintptr_t)(apic_base_address + reg);
     *apic_reg = value;
 }
 

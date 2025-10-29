@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/idt.h"
+#include "interrupt_test_config.h"
 
 // Test result codes
 #define TEST_SUCCESS            0
@@ -22,6 +23,9 @@
 #define TEST_FLAG_CONTINUE_ON_FAIL  (1 << 1)
 #define TEST_FLAG_VERBOSE           (1 << 2)
 
+// Test memory allocation flags
+#define TEST_MEM_FLAG_ZERO          (1 << 0)
+
 // Test statistics
 struct test_stats {
     int total_tests;
@@ -29,6 +33,8 @@ struct test_stats {
     int failed_tests;
     int exceptions_caught;
     int unexpected_exceptions;
+    uint32_t elapsed_ms;
+    int timed_out;
 };
 
 // Test context for exception handling
@@ -38,8 +44,14 @@ struct test_context {
     int exception_occurred;
     int exception_vector;
     uint64_t test_rip;
+    volatile uint64_t resume_rip;
     struct interrupt_frame *last_frame;
     char test_name[64];
+    uint64_t recovery_rip;
+    int abort_requested;
+    int context_corrupted;
+    int exception_depth;
+    int last_recovery_reason;
 };
 
 // Exception test functions
@@ -64,9 +76,9 @@ int test_privilege_violation(void);
 int test_segment_violation(void);
 
 // Test framework functions
-void interrupt_test_init(void);
+void interrupt_test_init(const struct interrupt_test_config *config);
 void interrupt_test_cleanup(void);
-int run_all_interrupt_tests(void);
+int run_all_interrupt_tests(const struct interrupt_test_config *config);
 int run_basic_exception_tests(void);
 int run_memory_access_tests(void);
 int run_control_flow_tests(void);
@@ -77,8 +89,11 @@ int test_end(void);
 void test_expect_exception(int vector);
 void test_set_flags(uint32_t flags);
 int test_is_exception_expected(void);
+void test_set_resume_point(void *rip);
+void test_clear_resume_point(void);
 void test_report_results(void);
 struct test_stats *test_get_stats(void);
+void interrupt_test_request_shutdown(int failed_tests);
 
 // Exception handler for tests
 void test_exception_handler(struct interrupt_frame *frame);

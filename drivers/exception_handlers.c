@@ -5,6 +5,7 @@
 
 #include "idt.h"
 #include "serial.h"
+#include "../boot/debug.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -402,28 +403,52 @@ void analyze_page_fault(uint64_t fault_addr, uint64_t error_code) {
  */
 void dump_stack_trace(uint64_t rbp, uint64_t rip) {
     kprintln("=== STACK TRACE ===");
-    kprint("Current RIP: "); kprint_hex(rip); kprintln("");
-    kprint("Current RBP: "); kprint_hex(rbp); kprintln("");
+    kprint("Start RIP: "); kprint_hex(rip); kprintln("");
+    kprint("Start RBP: "); kprint_hex(rbp); kprintln("");
 
-    /* Simple stack walk - be careful not to cause another fault */
-    int frame_count = 0;
+    int frame_index = 0;
     uint64_t current_rbp = rbp;
 
-    while (current_rbp != 0 && frame_count < 10) {
-        /* Check if RBP looks valid (aligned and in kernel space) */
-        if ((current_rbp & 0x7) != 0 || current_rbp < 0xFFFF800000000000ULL) {
-            kprintln("Invalid frame pointer - stopping trace");
+    while (current_rbp && frame_index < STACK_TRACE_DEPTH) {
+        /* Validate that the frame pointer and return address are safe to read */
+        if (!debug_is_valid_memory_address(current_rbp) ||
+            !debug_is_valid_memory_address(current_rbp + sizeof(uint64_t))) {
+            kprint("Frame "); kprint_decimal(frame_index);
+            kprint(": invalid frame pointer ");
+            kprint_hex(current_rbp); kprintln("");
             break;
         }
 
-        kprint("Frame "); kprint_hex(frame_count); kprint(": RBP=");
-        kprint_hex(current_rbp); kprintln("");
+        uint64_t *frame = (uint64_t *)current_rbp;
+        uint64_t next_rbp = frame[0];
+        uint64_t return_rip = frame[1];
 
-        /* Move to next frame (careful - this could fault) */
-        /* For now, just break to avoid potential double fault */
-        break;
+        kprint("Frame ");
+        kprint_decimal(frame_index);
+        kprint(": RBP=");
+        kprint_hex(current_rbp);
+        kprint(" RIP=");
+        kprint_hex(return_rip);
 
-        frame_count++;
+        const char *symbol = debug_get_symbol_name(return_rip);
+        if (symbol) {
+            kprint(" (");
+            kprint(symbol);
+            kprint(")");
+        }
+        kprintln("");
+
+        if (!next_rbp || next_rbp <= current_rbp) {
+            kprintln("Frame: Non-increasing RBP detected, stopping trace");
+            break;
+        }
+
+        current_rbp = next_rbp;
+        frame_index++;
+    }
+
+    if (frame_index == 0) {
+        kprintln("No stack frames walked");
     }
 
     kprintln("==================");

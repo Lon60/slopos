@@ -63,6 +63,12 @@ task_t *task_get_current(void);
  */
 void task_set_current(task_t *task);
 
+/*
+ * Terminate all tasks except the current one (used for shutdown)
+ * Returns 0 on success, non-zero on failure
+ */
+int task_shutdown_all(void);
+
 /* ========================================================================
  * SCHEDULER FUNCTIONS
  * ======================================================================== */
@@ -89,6 +95,11 @@ int start_scheduler(void);
  * Stop the scheduler
  */
 void stop_scheduler(void);
+
+/*
+ * Prepare scheduler for shutdown (stop scheduling and clear state)
+ */
+void scheduler_shutdown(void);
 
 /*
  * Add task to ready queue for scheduling
@@ -118,10 +129,20 @@ void yield(void);
 void block_current_task(void);
 
 /*
+ * Block the current task until the specified task terminates
+ */
+int task_wait_for(uint32_t task_id);
+
+/*
  * Unblock task (add back to ready queue)
  * Returns 0 on success, non-zero on failure
  */
 int unblock_task(task_t *task);
+
+/*
+ * Terminate the current task and reschedule
+ */
+void scheduler_task_exit(void) __attribute__((noreturn));
 
 /*
  * Check if scheduler is enabled

@@ -54,6 +54,11 @@
 
 #define IDT_ENTRIES 256
 
+enum exception_mode {
+    EXCEPTION_MODE_NORMAL = 0,
+    EXCEPTION_MODE_TEST = 1,
+};
+
 // IDT Entry structure (64-bit)
 struct idt_entry {
     uint16_t offset_low;    // Lower 16 bits of handler address
@@ -90,10 +95,15 @@ struct interrupt_frame {
 // Exception handler function type
 typedef void (*exception_handler_t)(struct interrupt_frame *frame);
 
+// Exception routing configuration
+void exception_set_mode(enum exception_mode mode);
+int exception_is_critical(uint8_t vector);
+
 // IDT management functions
 void idt_init(void);
 void idt_set_gate(uint8_t vector, uint64_t handler, uint16_t selector, uint8_t type);
 void idt_install_exception_handler(uint8_t vector, exception_handler_t handler);
+void idt_set_ist(uint8_t vector, uint8_t ist_index);
 void idt_load(void);
 
 // Exception handlers

@@ -9,8 +9,13 @@
 #include "constants.h"
 #include "idt.h"
 #include "debug.h"
+#include "gdt.h"
+#include "limine_protocol.h"
+#include "safe_stack.h"
+#include "shutdown.h"
 #include "../drivers/pic.h"
 #include "../drivers/apic.h"
+#include "../drivers/irq.h"
 #include "../drivers/interrupt_test.h"
 
 // Forward declarations for other modules
@@ -19,14 +24,17 @@ extern void verify_memory_layout(void);
 extern void check_stack_health(void);
 extern void kernel_panic(const char *message);
 extern void init_paging(void);
-extern int init_early_paging(void);
 extern void init_kernel_memory_layout(void);
+extern int init_memory_system(const struct limine_memmap_response *memmap,
+                              uint64_t hhdm_offset);
 
 // IDT and interrupt handling
 extern void init_idt(void);
 extern void init_pic(void);
 extern void dump_idt(void);
 extern void load_idt(void);
+
+extern void disable_pic(void);
 
 // Kernel state tracking
 static volatile int kernel_initialized = 0;
@@ -60,15 +68,26 @@ static void early_debug_string(const char *str) {
  * Initialize kernel subsystems in proper order
  */
 static void initialize_kernel_subsystems(void) {
-    early_debug_string("SlopOS: Initializing kernel subsystems\n");
+    early_debug_string("SlopOS: Initializing remaining kernel subsystems\n");
 
     // Initialize debug subsystem first
     debug_init();
     early_debug_string("SlopOS: Debug subsystem initialized\n");
 
+    // Set up GDT and TSS before enabling interrupts
+    early_debug_string("SlopOS: Initializing GDT/TSS...\n");
+    gdt_init();
+    early_debug_string("SlopOS: GDT/TSS initialized\n");
+
     // Initialize IDT FIRST - critical for debugging any issues that follow
     early_debug_string("SlopOS: Initializing IDT...\n");
     idt_init();
+
+    // Configure dedicated IST stacks for critical exceptions
+    early_debug_string("SlopOS: Configuring safe exception stacks...\n");
+    safe_stack_init();
+    early_debug_string("SlopOS: Safe exception stacks ready\n");
+
     idt_load();
     early_debug_string("SlopOS: IDT initialized - exception handling active\n");
 
@@ -77,24 +96,9 @@ static void initialize_kernel_subsystems(void) {
     pic_init();
     early_debug_string("SlopOS: PIC initialized - interrupt control ready\n");
 
-    // Skip APIC initialization for now - it requires MMIO mapping
-    // which needs full memory management to be set up first
-    // TODO: Initialize APIC after memory management is fully operational
-    early_debug_string("SlopOS: Skipping APIC initialization (requires MMIO mapping)\n");
-    early_debug_string("SlopOS: Using PIC for interrupt control\n");
-
-    // Skip interrupt test framework for now - we'll add proper testing later
-    // TODO: Re-enable interrupt testing after full boot is working
-    early_debug_string("SlopOS: Interrupt test framework skipped for initial boot\n");
-
-    // Initialize Limine boot protocol
-    early_debug_string("SlopOS: Initializing Limine boot protocol...\n");
-    extern int init_limine_protocol(void);
-    if (init_limine_protocol() == 0) {
-        early_debug_string("SlopOS: Limine protocol initialized successfully\n");
-    } else {
-        early_debug_string("SlopOS: WARNING - Limine protocol initialization failed\n");
-    }
+    early_debug_string("SlopOS: Configuring IRQ dispatcher...\n");
+    irq_init();
+    early_debug_string("SlopOS: IRQ dispatcher ready\n");
 
     // Skip paging initialization - already set up by boot assembly code
     // The boot/entry32.s and boot/entry64.s have already configured:
@@ -103,13 +107,67 @@ static void initialize_kernel_subsystems(void) {
     //   - Higher-half kernel mapping
     // Attempting to reinitialize would corrupt the active page tables
     early_debug_string("SlopOS: Using paging already configured by bootloader\n");
-    
-    // TODO: Later we can enhance paging (add more mappings, set up heap region, etc.)
-    // but we must NOT zero out or recreate the active page tables
+    early_debug_string("SlopOS: Memory system initialized earlier via Limine data\n");
 
-    // Initialize kernel memory layout
-    init_kernel_memory_layout();
-    early_debug_string("SlopOS: Kernel memory layout initialized\n");
+    // Detect and initialize APIC now that memory management is available
+    early_debug_string("SlopOS: Detecting Local APIC...\n");
+    if (apic_detect()) {
+        early_debug_string("SlopOS: Initializing Local APIC...\n");
+        if (apic_init() == 0) {
+            early_debug_string("SlopOS: Local APIC initialized, masking legacy PIC\n");
+            disable_pic();
+        } else {
+            early_debug_string("SlopOS: APIC initialization failed, retaining PIC\n");
+        }
+    } else {
+        early_debug_string("SlopOS: Local APIC unavailable, continuing with PIC\n");
+    }
+
+    struct interrupt_test_config test_config;
+    interrupt_test_config_init_defaults(&test_config);
+
+    const char *cmdline = get_kernel_cmdline();
+    if (cmdline) {
+        interrupt_test_config_parse_cmdline(&test_config, cmdline);
+    }
+
+    if (test_config.enabled && test_config.suite_mask == 0) {
+        kprintln("INTERRUPT_TEST: No suites selected, skipping execution");
+        test_config.enabled = 0;
+    }
+
+    if (test_config.enabled) {
+        early_debug_string("SlopOS: Running interrupt test framework...\n");
+
+        kprint("INTERRUPT_TEST: Suites -> ");
+        kprintln(interrupt_test_suite_string(test_config.suite_mask));
+
+        kprint("INTERRUPT_TEST: Verbosity -> ");
+        kprintln(interrupt_test_verbosity_string(test_config.verbosity));
+
+        kprint("INTERRUPT_TEST: Timeout (ms) -> ");
+        kprint_dec(test_config.timeout_ms);
+        kprintln("");
+
+        interrupt_test_init(&test_config);
+        int passed = run_all_interrupt_tests(&test_config);
+        struct test_stats *stats = test_get_stats();
+        int failed_tests = stats ? stats->failed_tests : 0;
+        interrupt_test_cleanup();
+
+        kprint("INTERRUPT_TEST: Boot run passed tests -> ");
+        kprint_dec(passed);
+        kprintln("");
+
+        if (test_config.shutdown_on_complete) {
+            kprintln("INTERRUPT_TEST: Auto shutdown enabled after harness");
+            interrupt_test_request_shutdown(failed_tests);
+        }
+
+        early_debug_string("SlopOS: Interrupt test framework complete\n");
+    } else {
+        early_debug_string("SlopOS: Interrupt test framework disabled (config)\n");
+    }
 
     // Mark kernel as initialized
     kernel_initialized = 1;
@@ -130,6 +188,39 @@ void kernel_main(void) {
     // Output success message via serial port FIRST to prove serial works
     kprintln("SlopOS Kernel Started!");
     kprintln("Booting via Limine Protocol...");
+
+    kprintln("Initializing Limine protocol interface...");
+    if (init_limine_protocol() != 0) {
+        kprintln("ERROR: Limine protocol initialization failed");
+        kernel_panic("Limine protocol initialization failed");
+    } else {
+        kprintln("Limine protocol interface ready.");
+    }
+
+    if (!is_memory_map_available()) {
+        kprintln("ERROR: Limine did not provide a memory map");
+        kernel_panic("Missing Limine memory map");
+    }
+
+    const struct limine_memmap_response *limine_memmap = limine_get_memmap_response();
+    if (!limine_memmap) {
+        kprintln("ERROR: Limine memory map response pointer is NULL");
+        kernel_panic("Invalid Limine memory map");
+    }
+
+    uint64_t hhdm_offset = 0;
+    if (is_hhdm_available()) {
+        hhdm_offset = get_hhdm_offset();
+    } else {
+        kprintln("WARNING: Limine did not report an HHDM offset");
+    }
+
+    kprintln("Initializing memory management from Limine data...");
+    if (init_memory_system(limine_memmap, hhdm_offset) != 0) {
+        kprintln("ERROR: Memory system initialization failed");
+        kernel_panic("Memory system initialization failed");
+    }
+    kprintln("Memory management initialized.");
 
     // Verify we're running in higher-half virtual memory
     uint64_t stack_ptr;
@@ -154,8 +245,8 @@ current_location:
         kprintln("WARNING: Not running in higher-half virtual memory");
     }
 
-    // Initialize kernel subsystems with memory management
-    kprintln("Initializing kernel subsystems...");
+    // Initialize remaining kernel subsystems now that memory is online
+    kprintln("Initializing remaining kernel subsystems...");
     initialize_kernel_subsystems();
     kprintln("Kernel subsystem initialization complete.");
 
@@ -278,30 +369,5 @@ void report_kernel_status(void) {
         early_debug_string("SlopOS: Kernel status - INITIALIZED\n");
     } else {
         early_debug_string("SlopOS: Kernel status - INITIALIZING\n");
-    }
-}
-
-/*
- * Safe kernel shutdown routine
- * Performs cleanup and halts the system safely
- */
-void kernel_shutdown(const char *reason) {
-    // Disable interrupts
-    __asm__ volatile ("cli");
-
-    early_debug_string("SlopOS: Kernel shutdown requested\n");
-    if (reason) {
-        early_debug_string("SlopOS: Shutdown reason: ");
-        early_debug_string(reason);
-        early_debug_string("\n");
-    }
-
-    // TODO: Perform cleanup of kernel resources
-
-    early_debug_string("SlopOS: System halted\n");
-
-    // Halt the system
-    while (1) {
-        __asm__ volatile ("hlt");
     }
 }

@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -26,6 +27,7 @@ void kernel_panic(const char *message);
 /* Maximum physical pages we can track (4GB / 4KB = 1M pages) */
 #define MAX_PHYSICAL_PAGES            1048576
 #define INVALID_PAGE_FRAME            0xFFFFFFFF
+#define DMA_MEMORY_LIMIT              0x01000000ULL
 
 /* Page frame allocation flags */
 #define ALLOC_FLAG_ZERO               0x01   /* Zero the page after allocation */
@@ -105,6 +107,231 @@ static inline page_frame_t *get_frame_desc(uint32_t frame_num) {
     return &page_allocator.frames[frame_num];
 }
 
+/* Forward declarations for helpers used before definition */
+static void add_to_free_list(uint32_t frame_num);
+#if defined(PAGE_ALLOC_DEBUG)
+static void page_alloc_debug_self_test(void);
+#endif
+static int frame_satisfies_flags(uint32_t frame_num, uint32_t flags);
+static int unlink_frame_from_free_list(uint32_t frame_num);
+static void rollback_contiguous_allocation(uint32_t start_frame, uint32_t count);
+static int find_contiguous_frames(uint32_t count, uint32_t flags, uint32_t *start_frame_out);
+
+/* ========================================================================
+ * DEBUG LOGGING HELPERS
+ * ======================================================================== */
+
+#ifdef PAGE_ALLOC_DEBUG
+static void page_alloc_log_contiguous(uint64_t phys_addr, uint32_t count) {
+    kprint("alloc_page_frames: allocated ");
+    kprint_decimal(count);
+    kprint(" pages @ ");
+    kprint_hex(phys_addr);
+    kprint("\n");
+}
+#else
+#define page_alloc_log_contiguous(phys_addr, count) ((void)0)
+#endif
+
+/* ========================================================================
+ * INTERNAL HELPERS
+ * ======================================================================== */
+
+static uint8_t page_state_for_flags(uint32_t flags) {
+    if (flags & ALLOC_FLAG_DMA) {
+        return PAGE_FRAME_DMA;
+    }
+    if (flags & ALLOC_FLAG_KERNEL) {
+        return PAGE_FRAME_KERNEL;
+    }
+    return PAGE_FRAME_ALLOCATED;
+}
+
+static int frame_satisfies_flags(uint32_t frame_num, uint32_t flags) {
+    page_frame_t *frame = get_frame_desc(frame_num);
+    if (!frame || frame->state != PAGE_FRAME_FREE) {
+        return 0;
+    }
+
+    if (flags & ALLOC_FLAG_DMA) {
+        uint64_t phys_addr = frame_to_phys(frame_num);
+        if (phys_addr >= DMA_MEMORY_LIMIT) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int frame_state_is_allocated(uint8_t state) {
+    return state == PAGE_FRAME_ALLOCATED ||
+           state == PAGE_FRAME_KERNEL ||
+           state == PAGE_FRAME_DMA;
+}
+
+static int unlink_frame_from_free_list(uint32_t frame_num) {
+    if (!is_valid_frame(frame_num)) {
+        return -1;
+    }
+
+    uint32_t current = page_allocator.free_list_head;
+    uint32_t previous = INVALID_PAGE_FRAME;
+
+    while (current != INVALID_PAGE_FRAME) {
+        if (current == frame_num) {
+            page_frame_t *frame = get_frame_desc(frame_num);
+
+            if (previous == INVALID_PAGE_FRAME) {
+                page_allocator.free_list_head = frame->next_free;
+            } else {
+                page_frame_t *prev_frame = get_frame_desc(previous);
+                if (prev_frame) {
+                    prev_frame->next_free = frame->next_free;
+                }
+            }
+
+            frame->next_free = INVALID_PAGE_FRAME;
+            frame->state = PAGE_FRAME_ALLOCATED;
+            frame->ref_count = 0;
+
+            if (page_allocator.free_frames > 0) {
+                page_allocator.free_frames--;
+            }
+            page_allocator.allocated_frames++;
+
+            return 0;
+        }
+
+        previous = current;
+        page_frame_t *current_frame = get_frame_desc(current);
+        if (!current_frame) {
+            break;
+        }
+        current = current_frame->next_free;
+    }
+
+    return -1;
+}
+
+static void rollback_contiguous_allocation(uint32_t start_frame, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t frame_num = start_frame + i;
+        if (!is_valid_frame(frame_num)) {
+            continue;
+        }
+
+        page_frame_t *frame = get_frame_desc(frame_num);
+        if (!frame) {
+            continue;
+        }
+
+        frame->ref_count = 0;
+        frame->flags = 0;
+        frame->order = 0;
+
+        if (page_allocator.allocated_frames > 0) {
+            page_allocator.allocated_frames--;
+        }
+
+        add_to_free_list(frame_num);
+    }
+}
+
+static int find_contiguous_frames(uint32_t count, uint32_t flags, uint32_t *start_frame_out) {
+    if (!start_frame_out || count == 0) {
+        return -1;
+    }
+
+    uint32_t consecutive = 0;
+    uint32_t candidate_start = 0;
+
+    for (uint32_t frame_num = 0; frame_num < page_allocator.total_frames; frame_num++) {
+        page_frame_t *frame = get_frame_desc(frame_num);
+        if (!frame) {
+            consecutive = 0;
+            continue;
+        }
+
+        if (frame->state == PAGE_FRAME_RESERVED) {
+            consecutive = 0;
+            continue;
+        }
+
+        if (frame_state_is_allocated(frame->state)) {
+            consecutive = 0;
+            continue;
+        }
+
+        if (frame_satisfies_flags(frame_num, flags)) {
+            if (consecutive == 0) {
+                candidate_start = frame_num;
+            }
+
+            consecutive++;
+
+            if (consecutive == count) {
+                *start_frame_out = candidate_start;
+                return 0;
+            }
+        } else {
+            consecutive = 0;
+        }
+    }
+
+    return -1;
+}
+
+#ifdef PAGE_ALLOC_DEBUG
+static void page_alloc_debug_self_test(void) {
+    static const uint32_t sample_sizes[] = {2, 4, 16, 64};
+    static const uint32_t sample_count = sizeof(sample_sizes) / sizeof(sample_sizes[0]);
+
+    kprintln("[page_alloc] Running contiguous allocation self-test");
+
+    for (uint32_t i = 0; i < sample_count; i++) {
+        uint32_t count = sample_sizes[i];
+        uint64_t phys_base = alloc_page_frames(count, ALLOC_FLAG_KERNEL);
+
+        if (phys_base == 0) {
+            kprint("[page_alloc] Self-test failed to allocate ");
+            kprint_decimal(count);
+            kprintln(" pages");
+            continue;
+        }
+
+        uint32_t first_frame = phys_to_frame(phys_base);
+        int contiguous_ok = 1;
+
+        for (uint32_t page = 0; page < count; page++) {
+            uint64_t expected = frame_to_phys(first_frame + page);
+            uint64_t actual = phys_base + ((uint64_t)page << 12);
+            if (actual != expected) {
+                contiguous_ok = 0;
+                break;
+            }
+        }
+
+        if (!contiguous_ok) {
+            kprint("[page_alloc] Contiguity check failed for ");
+            kprint_decimal(count);
+            kprintln(" pages");
+        }
+
+        for (uint32_t page = 0; page < count; page++) {
+            uint64_t phys_page = phys_base + ((uint64_t)page << 12);
+            if (free_page_frame(phys_page) != 0) {
+                kprint("[page_alloc] Self-test failed to free page index ");
+                kprint_decimal(page);
+                kprintln("");
+            }
+        }
+    }
+
+    kprintln("[page_alloc] Contiguous allocation self-test complete");
+}
+#endif
+
+
 /* ========================================================================
  * FREE LIST MANAGEMENT
  * ======================================================================== */
@@ -122,6 +349,9 @@ static void add_to_free_list(uint32_t frame_num) {
     frame->next_free = page_allocator.free_list_head;
     page_allocator.free_list_head = frame_num;
     frame->state = PAGE_FRAME_FREE;
+    frame->flags = 0;
+    frame->order = 0;
+    frame->ref_count = 0;
     page_allocator.free_frames++;
 }
 
@@ -140,6 +370,7 @@ static uint32_t remove_from_free_list(void) {
     page_allocator.free_list_head = frame->next_free;
     frame->next_free = INVALID_PAGE_FRAME;
     frame->state = PAGE_FRAME_ALLOCATED;
+    frame->ref_count = 0;
     page_allocator.free_frames--;
     page_allocator.allocated_frames++;
 
@@ -166,14 +397,22 @@ uint64_t alloc_page_frame(uint32_t flags) {
     frame->ref_count = 1;
     frame->flags = flags;
     frame->order = 0;  /* Single page */
+    frame->state = page_state_for_flags(flags);
 
     uint64_t phys_addr = frame_to_phys(frame_num);
 
     /* Zero page if requested */
     if (flags & ALLOC_FLAG_ZERO) {
-        /* We'll need virtual mapping to zero the page */
-        /* For now, just note the request */
-        kprint("Zero page requested but not implemented yet\n");
+        if (mm_zero_physical_page(phys_addr) != 0) {
+            frame->ref_count = 0;
+            frame->flags = 0;
+            frame->order = 0;
+            add_to_free_list(frame_num);
+            if (page_allocator.allocated_frames > 0) {
+                page_allocator.allocated_frames--;
+            }
+            return 0;
+        }
     }
 
     return phys_addr;
@@ -192,10 +431,60 @@ uint64_t alloc_page_frames(uint32_t count, uint32_t flags) {
         return alloc_page_frame(flags);
     }
 
-    /* For now, allocate individual pages */
-    /* TODO: Implement proper contiguous allocation */
-    kprint("Multi-page allocation not fully implemented\n");
-    return alloc_page_frame(flags);
+    uint32_t start_frame = 0;
+    if (find_contiguous_frames(count, flags, &start_frame) != 0) {
+        kprint("alloc_page_frames: Unable to satisfy contiguous allocation\n");
+        return 0;
+    }
+
+    uint32_t frames_removed = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t frame_num = start_frame + i;
+
+        if (!frame_satisfies_flags(frame_num, flags)) {
+            break;
+        }
+
+        if (unlink_frame_from_free_list(frame_num) != 0) {
+            break;
+        }
+
+        frames_removed++;
+    }
+
+    if (frames_removed != count) {
+        rollback_contiguous_allocation(start_frame, frames_removed);
+        kprint("alloc_page_frames: Failed to unlink frames from free list\n");
+        return 0;
+    }
+
+    if (flags & ALLOC_FLAG_ZERO) {
+        for (uint32_t i = 0; i < count; i++) {
+            uint64_t phys_addr = frame_to_phys(start_frame + i);
+            if (mm_zero_physical_page(phys_addr) != 0) {
+                rollback_contiguous_allocation(start_frame, count);
+                kprint("alloc_page_frames: Zeroing contiguous pages failed\n");
+                return 0;
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t frame_num = start_frame + i;
+        page_frame_t *frame = get_frame_desc(frame_num);
+        if (!frame) {
+            continue;
+        }
+
+        frame->ref_count = 1;
+        frame->flags = flags;
+        frame->order = 0;
+        frame->state = page_state_for_flags(flags);
+    }
+
+    uint64_t start_phys = frame_to_phys(start_frame);
+    page_alloc_log_contiguous(start_phys, count);
+    return start_phys;
 }
 
 /*
@@ -212,7 +501,7 @@ int free_page_frame(uint64_t phys_addr) {
 
     page_frame_t *frame = get_frame_desc(frame_num);
 
-    if (frame->state != PAGE_FRAME_ALLOCATED) {
+    if (!frame_state_is_allocated(frame->state)) {
         kprint("free_page_frame: Page not allocated\n");
         return -1;
     }
@@ -229,7 +518,9 @@ int free_page_frame(uint64_t phys_addr) {
     frame->order = 0;
 
     add_to_free_list(frame_num);
-    page_allocator.allocated_frames--;
+    if (page_allocator.allocated_frames > 0) {
+        page_allocator.allocated_frames--;
+    }
 
     return 0;
 }
@@ -248,7 +539,7 @@ int ref_page_frame(uint64_t phys_addr) {
 
     page_frame_t *frame = get_frame_desc(frame_num);
 
-    if (frame->state != PAGE_FRAME_ALLOCATED) {
+    if (!frame_state_is_allocated(frame->state)) {
         kprint("ref_page_frame: Page not allocated\n");
         return -1;
     }
@@ -376,6 +667,10 @@ int finalize_page_allocator(void) {
     kprint_decimal(total_available);
     kprint(" pages available\n");
 
+#ifdef PAGE_ALLOC_DEBUG
+    page_alloc_debug_self_test();
+#endif
+
     return 0;
 }
 
@@ -386,4 +681,12 @@ void get_page_allocator_stats(uint32_t *total, uint32_t *free, uint32_t *allocat
     if (total) *total = page_allocator.total_frames;
     if (free) *free = page_allocator.free_frames;
     if (allocated) *allocated = page_allocator.allocated_frames;
+}
+
+size_t page_allocator_descriptor_size(void) {
+    return sizeof(page_frame_t);
+}
+
+uint32_t page_allocator_max_supported_frames(void) {
+    return MAX_PHYSICAL_PAGES;
 }

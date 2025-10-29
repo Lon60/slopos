@@ -7,15 +7,28 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/constants.h"
+#include "../boot/debug.h"
 #include "../drivers/serial.h"
+#include "../mm/paging.h"
 #include "task.h"
+#include "scheduler.h"
+
+extern void task_entry_wrapper(void);
+
+/* Process VM allocation flags (mirror mm/process_vm.c definitions) */
+#define PROCESS_VM_FLAG_READ                  0x01
+#define PROCESS_VM_FLAG_WRITE                 0x02
+#define PROCESS_VM_FLAG_EXEC                  0x04
+#define PROCESS_VM_FLAG_USER                  0x08
 
 /* Forward declarations */
 uint32_t create_process_vm(void);
 int destroy_process_vm(uint32_t process_id);
+int destroy_process_vma_space(uint32_t process_id);
 uint64_t process_vm_alloc(uint32_t process_id, uint64_t size, uint32_t flags);
 int process_vm_free(uint32_t process_id, uint64_t vaddr, uint64_t size);
 void kernel_panic(const char *message);
+process_page_dir_t *process_vm_get_page_dir(uint32_t process_id);
 
 /* Task manager structure */
 typedef struct task_manager {
@@ -40,6 +53,9 @@ typedef struct task_manager {
 
 /* Global task manager instance */
 static task_manager_t task_manager = {0};
+
+/* Forward declarations */
+static void release_task_dependents(uint32_t completed_task_id);
 
 /* ========================================================================
  * UTILITY FUNCTIONS
@@ -72,6 +88,29 @@ static task_t *find_free_task_slot(void) {
 }
 
 /*
+ * Release tasks that were waiting on the specified task to complete
+ */
+static void release_task_dependents(uint32_t completed_task_id) {
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        task_t *dependent = &task_manager.tasks[i];
+
+        if (dependent->state != TASK_STATE_BLOCKED) {
+            continue;
+        }
+
+        if (dependent->waiting_on_task_id != completed_task_id) {
+            continue;
+        }
+
+        dependent->waiting_on_task_id = INVALID_TASK_ID;
+
+        if (unblock_task(dependent) != 0) {
+            kprint("task_terminate: Failed to unblock dependent task\n");
+        }
+    }
+}
+
+/*
  * Initialize a task context for first execution
  */
 static void init_task_context(task_t *task) {
@@ -80,8 +119,8 @@ static void init_task_context(task_t *task) {
     task->context.rbx = 0;
     task->context.rcx = 0;
     task->context.rdx = 0;
-    task->context.rsi = 0;
-    task->context.rdi = (uint64_t)task->entry_arg;  /* First argument */
+    task->context.rsi = (uint64_t)task->entry_arg;  /* Task argument */
+    task->context.rdi = (uint64_t)task->entry_point;  /* Task entry pointer */
     task->context.rbp = 0;
     task->context.rsp = task->stack_pointer;
     task->context.r8 = 0;
@@ -94,7 +133,7 @@ static void init_task_context(task_t *task) {
     task->context.r15 = 0;
 
     /* Set instruction pointer to task entry point */
-    task->context.rip = (uint64_t)task->entry_point;
+    task->context.rip = (uint64_t)task_entry_wrapper;
 
     /* Set default flags register */
     task->context.rflags = 0x202;  /* IF=1 (interrupts enabled), reserved bit 1 */
@@ -149,7 +188,9 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
 
     /* Allocate stack for task */
     uint64_t stack_base = process_vm_alloc(process_id, TASK_STACK_SIZE,
-                                          0x02 | 0x08);  /* Write + User */
+                                          PROCESS_VM_FLAG_READ |
+                                          PROCESS_VM_FLAG_WRITE |
+                                          PROCESS_VM_FLAG_USER);
     if (!stack_base) {
         kprint("task_create: Failed to allocate stack\n");
         destroy_process_vm(process_id);
@@ -181,13 +222,21 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     task->entry_arg = arg;
     task->time_slice = 10;  /* Default time slice */
     task->total_runtime = 0;
-    task->creation_time = 0;  /* TODO: Get system time */
+    task->creation_time = debug_get_timestamp();
     task->yield_count = 0;
+    task->last_run_timestamp = 0;
+    task->waiting_on_task_id = INVALID_TASK_ID;
     task->next = NULL;
     task->prev = NULL;
 
     /* Initialize CPU context */
     init_task_context(task);
+
+    /* Record page directory for context switches */
+    process_page_dir_t *page_dir = process_vm_get_page_dir(process_id);
+    if (page_dir && page_dir->pml4_phys) {
+        task->context.cr3 = page_dir->pml4_phys;
+    }
 
     /* Update task manager */
     task_manager.num_tasks++;
@@ -206,7 +255,20 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
  * Terminate a task and clean up resources
  */
 int task_terminate(uint32_t task_id) {
-    task_t *task = find_task_by_id(task_id);
+    task_t *task = NULL;
+    uint32_t resolved_id = task_id;
+
+    if ((int32_t)task_id == -1) {
+        task = task_manager.current_task;
+        if (!task) {
+            kprint("task_terminate: No current task to terminate\n");
+            return -1;
+        }
+        resolved_id = task->task_id;
+    } else {
+        task = find_task_by_id(task_id);
+    }
+
     if (!task || task->state == TASK_STATE_INVALID) {
         kprint("task_terminate: Task not found\n");
         return -1;
@@ -215,29 +277,95 @@ int task_terminate(uint32_t task_id) {
     kprint("Terminating task '");
     kprint(task->name);
     kprint("' (ID ");
-    kprint_decimal(task_id);
+    kprint_decimal(resolved_id);
     kprint(")\n");
+
+    /* Ensure task is removed from scheduler structures */
+    unschedule_task(task);
+
+    /* Finalize runtime statistics if task was running */
+    if (task->last_run_timestamp != 0) {
+        uint64_t now = debug_get_timestamp();
+        if (now >= task->last_run_timestamp) {
+            task->total_runtime += now - task->last_run_timestamp;
+        }
+        task->last_run_timestamp = 0;
+    }
 
     /* Mark task as terminated */
     task->state = TASK_STATE_TERMINATED;
 
+    if (task == task_manager.current_task) {
+        task_manager.current_task = NULL;
+    }
+
+    /* Wake any dependents waiting on this task */
+    release_task_dependents(resolved_id);
+
     /* Free process VM space */
     if (task->process_id != INVALID_PROCESS_ID) {
         destroy_process_vm(task->process_id);
+        destroy_process_vma_space(task->process_id);
     }
 
     /* Clear task control block */
     task->task_id = INVALID_TASK_ID;
     task->state = TASK_STATE_INVALID;
     task->process_id = INVALID_PROCESS_ID;
+    task->stack_base = 0;
+    task->stack_pointer = 0;
+    task->stack_size = 0;
+    task->time_slice = 0;
+    task->total_runtime = 0;
+    task->yield_count = 0;
     task->next = NULL;
     task->prev = NULL;
+    task->entry_point = NULL;
+    task->entry_arg = NULL;
+    task->creation_time = 0;
+    task->waiting_on_task_id = INVALID_TASK_ID;
+    task->last_run_timestamp = 0;
 
     /* Update task manager */
-    task_manager.num_tasks--;
+    if (task_manager.num_tasks > 0) {
+        task_manager.num_tasks--;
+    }
     task_manager.tasks_terminated++;
 
     return 0;
+}
+
+/*
+ * Terminate all tasks except the current one
+ * Used during shutdown sequences to release task resources
+ */
+int task_shutdown_all(void) {
+    int result = 0;
+    task_t *current = task_manager.current_task;
+
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        task_t *task = &task_manager.tasks[i];
+
+        if (task->state == TASK_STATE_INVALID) {
+            continue;
+        }
+
+        if (task == current) {
+            continue;
+        }
+
+        if (task->task_id == INVALID_TASK_ID) {
+            continue;
+        }
+
+        if (task_terminate(task->task_id) != 0) {
+            result = -1;
+        }
+    }
+
+    task_manager.num_tasks = 0;
+
+    return result;
 }
 
 /*
@@ -289,38 +417,30 @@ int task_set_state(uint32_t task_id, uint8_t new_state) {
  * Initialize the task management system
  */
 int init_task_manager(void) {
-    kprint("Initializing task management system\n");
-
-    kprint("Setting num_tasks\n");
-    volatile uint32_t *num_tasks_ptr = &task_manager.num_tasks;
-    *num_tasks_ptr = 0;
-    
-    kprint("Setting next_task_id\n");
-    volatile uint32_t *next_id_ptr = &task_manager.next_task_id;
-    *next_id_ptr = 1;
-    
-    kprint("Setting current_task\n");
+    task_manager.num_tasks = 0;
+    task_manager.next_task_id = 1;
     task_manager.current_task = NULL;
-    
-    kprint("Setting idle_task\n");
     task_manager.idle_task = NULL;
-    
-    kprint("Setting ready_queue pointers\n");
     task_manager.ready_queue_head = NULL;
     task_manager.ready_queue_tail = NULL;
-    
-    /* NOTE: Statistics fields and task array are already zero-initialized
-     * because task_manager is a static global with = {0} initializer.
-     * We skip explicit initialization to avoid compiler-generated instructions
-     * that cause "Invalid Opcode" exceptions. */
+    task_manager.total_context_switches = 0;
+    task_manager.total_yields = 0;
+    task_manager.tasks_created = 0;
+    task_manager.tasks_terminated = 0;
 
-    kprint("Task manager structure ready (fields zero-initialized)\n");
-    
-    /* Skip clearing task array for now - it seems to cause issues
-     * The array is already zero-initialized as a static global */
-    kprint("Skipping task array clearing (already zero-initialized)\n");
+    /* Clear task pool */
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        task_manager.tasks[i].task_id = INVALID_TASK_ID;
+        task_manager.tasks[i].state = TASK_STATE_INVALID;
+        task_manager.tasks[i].process_id = INVALID_PROCESS_ID;
+        task_manager.tasks[i].next = NULL;
+        task_manager.tasks[i].prev = NULL;
+        task_manager.tasks[i].total_runtime = 0;
+        task_manager.tasks[i].yield_count = 0;
+        task_manager.tasks[i].last_run_timestamp = 0;
+        task_manager.tasks[i].waiting_on_task_id = INVALID_TASK_ID;
+    }
 
-    kprint("Task management system initialized\n");
     return 0;
 }
 
@@ -337,6 +457,84 @@ void get_task_stats(uint32_t *total_tasks, uint32_t *active_tasks,
     }
     if (context_switches) {
         *context_switches = task_manager.total_context_switches;
+    }
+}
+
+/*
+ * Record scheduler context switch information
+ */
+void task_record_context_switch(task_t *from, task_t *to, uint64_t timestamp) {
+    if (from && from->last_run_timestamp != 0 && timestamp >= from->last_run_timestamp) {
+        from->total_runtime += timestamp - from->last_run_timestamp;
+    }
+
+    if (from) {
+        from->last_run_timestamp = 0;
+    }
+
+    if (to) {
+        to->last_run_timestamp = timestamp;
+    }
+
+    if (to && to != from) {
+        task_manager.total_context_switches++;
+    }
+}
+
+/*
+ * Record voluntary yield for task statistics
+ */
+void task_record_yield(task_t *task) {
+    task_manager.total_yields++;
+
+    if (task) {
+        task->yield_count++;
+    }
+}
+
+/*
+ * Get number of yields recorded across all tasks
+ */
+uint64_t task_get_total_yields(void) {
+    return task_manager.total_yields;
+}
+
+/*
+ * Convert task state to string for diagnostics
+ */
+const char *task_state_to_string(uint8_t state) {
+    switch (state) {
+    case TASK_STATE_INVALID:
+        return "invalid";
+    case TASK_STATE_READY:
+        return "ready";
+    case TASK_STATE_RUNNING:
+        return "running";
+    case TASK_STATE_BLOCKED:
+        return "blocked";
+    case TASK_STATE_TERMINATED:
+        return "terminated";
+    default:
+        return "unknown";
+    }
+}
+
+/*
+ * Iterate over active tasks and invoke callback
+ */
+void task_iterate_active(task_iterate_cb callback, void *context) {
+    if (!callback) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        task_t *task = &task_manager.tasks[i];
+
+        if (task->state == TASK_STATE_INVALID || task->task_id == INVALID_TASK_ID) {
+            continue;
+        }
+
+        callback(task, context);
     }
 }
 

@@ -112,6 +112,7 @@ void debug_dump_memory_around_rip(uint64_t rip);
 void debug_dump_stack_memory(uint64_t rsp, size_t length);
 int debug_is_valid_memory_address(uint64_t address);
 int debug_get_memory_type(uint64_t address);
+void debug_flush(void);
 
 // Exception analysis
 void debug_analyze_exception(struct interrupt_frame *frame);

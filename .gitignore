@@ -5,6 +5,7 @@ third_party/*
 EFI/
 boot_fat/
 test_efi_dir/
+test_output.log
 *.swp
 slop.iso
 *.iso

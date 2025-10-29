@@ -74,6 +74,14 @@
 #define PAGE_SIZE_2MB                 0x200000 /* 2MB page */
 #define PAGE_SIZE_1GB                 0x40000000 /* 1GB page */
 
+/* Exception handling stack configuration */
+#define EXCEPTION_STACK_REGION_BASE   0xFFFFFFFFB0000000ULL  /* Reserved region for IST stacks */
+#define EXCEPTION_STACK_REGION_STRIDE 0x00010000ULL          /* 64KB spacing per stack */
+#define EXCEPTION_STACK_GUARD_SIZE    PAGE_SIZE_4KB          /* Single guard page */
+#define EXCEPTION_STACK_PAGES         8                      /* Data pages per stack (32KB) */
+#define EXCEPTION_STACK_SIZE          (EXCEPTION_STACK_PAGES * PAGE_SIZE_4KB)
+#define EXCEPTION_STACK_TOTAL_SIZE    (EXCEPTION_STACK_GUARD_SIZE + EXCEPTION_STACK_SIZE)
+
 /* Memory alignment */
 #define MULTIBOOT_HEADER_ALIGN        8        /* Multiboot2 header alignment */
 #define PAGE_ALIGN                    0x1000   /* Page alignment boundary */
@@ -110,6 +118,7 @@
 #define GDT_NULL_SELECTOR             0x00     /* Null selector (required first entry) */
 #define GDT_CODE_SELECTOR             0x08     /* Code segment selector */
 #define GDT_DATA_SELECTOR             0x10     /* Data segment selector */
+#define GDT_TSS_SELECTOR              0x18     /* Task State Segment selector */
 
 /* GDT segment descriptor values for 64-bit mode */
 #define GDT_NULL_DESCRIPTOR           0x0000000000000000ULL
