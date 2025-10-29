@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <string.h>
+#include "../lib/memory.h"
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
 #include "framebuffer.h"
