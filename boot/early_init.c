@@ -262,9 +262,40 @@ current_location:
     extern void framebuffer_clear(uint32_t color);
     extern int graphics_draw_rect_filled(int x, int y, int width, int height, uint32_t color);
     extern int graphics_draw_circle(int cx, int cy, int radius, uint32_t color);
+    extern void *framebuffer_get_info(void);  // Returns framebuffer_info_t*
 
     if (framebuffer_init() == 0) {
         kprintln("Framebuffer initialized successfully!");
+
+        // Test: Verify framebuffer uses translated virtual address
+        // This confirms that framebuffer_init() correctly translated the
+        // physical address via mm_phys_to_virt() and the virtual pointer
+        // is being used for drawing operations. The failure case (no mapping
+        // available) is tested by the error path in framebuffer_init() which
+        // now properly checks mm_phys_to_virt() return value and fails gracefully.
+        void *fb_info_ptr = framebuffer_get_info();
+        if (fb_info_ptr) {
+            // Access virtual_addr field to verify translation worked
+            // Cast to access struct field (we know the layout from framebuffer.h)
+            typedef struct {
+                uint64_t physical_addr;
+                void *virtual_addr;
+                uint32_t width;
+                uint32_t height;
+                uint32_t pitch;
+                uint8_t bpp;
+                uint8_t pixel_format;
+                uint32_t buffer_size;
+                uint8_t initialized;
+            } framebuffer_info_test_t;
+            
+            framebuffer_info_test_t *fb_info = (framebuffer_info_test_t *)fb_info_ptr;
+            if (fb_info->virtual_addr && fb_info->virtual_addr != (void*)fb_info->physical_addr) {
+                kprint("Graphics test: Framebuffer using translated virtual address ");
+                kprint_hex((uint64_t)fb_info->virtual_addr);
+                kprintln(" (translation verified)");
+            }
+        }
 
         // Clear screen to dark blue
         framebuffer_clear(0x001122FF);

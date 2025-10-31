@@ -1,12 +1,21 @@
 /*
  * SlopOS Framebuffer Driver - UEFI GOP Framebuffer Management
  * Handles initialization and management of the system framebuffer
+ *
+ * DEPENDENCY: This driver requires HHDM (Higher-Half Direct Mapping) or
+ * identity mapping to access the framebuffer. The framebuffer physical address
+ * is translated to a virtual address using mm_phys_to_virt(). If no mapping
+ * is available, framebuffer initialization will fail gracefully.
+ *
+ * NOTE: The framebuffer memory range should ideally be reserved during memory
+ * system initialization to prevent it from being allocated by the page allocator.
  */
 
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../mm/phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -150,7 +159,25 @@ int framebuffer_init(void) {
         return -1;
     }
 
-    void *virtual_addr = (void*)phys_addr;
+    /*
+     * Translate physical framebuffer address to virtual address.
+     * The framebuffer depends on HHDM (Higher-Half Direct Mapping) or
+     * identity mappings to be accessible. If neither is available, the
+     * framebuffer cannot be initialized.
+     */
+    uint64_t virtual_addr_uint = mm_phys_to_virt(phys_addr);
+    if (virtual_addr_uint == 0) {
+        kprint("ERROR: No virtual mapping available for framebuffer at physical address ");
+        kprint_hex(phys_addr);
+        kprintln("");
+        kprintln("Framebuffer requires HHDM (Higher-Half Direct Mapping) or identity mapping");
+        return -1;
+    }
+    void *virtual_addr = (void*)virtual_addr_uint;
+
+    kprint("Framebuffer virtual address: ");
+    kprint_hex(virtual_addr_uint);
+    kprintln("");
 
     /* Initialize framebuffer info */
     fb_info.physical_addr = phys_addr;
