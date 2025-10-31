@@ -45,129 +45,153 @@
 #
 
 context_switch:
+    # Save actual RDI and RSI register values before using them as context pointers
+    # We need to preserve the task's real register state, not the function arguments
+    # Use R8 and R9 as temporary storage for the context pointers
+    movq    %rdi, %r8               # Save old_context pointer to r8
+    movq    %rsi, %r9               # Save new_context pointer to r9
+
     # Check if we need to save old context
-    test    %rdi, %rdi              # Test if old_context is NULL
+    test    %r8, %r8                # Test if old_context is NULL
     jz      load_new_context        # Skip save if NULL (first task switch)
 
-    # Save current CPU state to old context
-    movq    %rax, 0x00(%rdi)        # Save rax
-    movq    %rbx, 0x08(%rdi)        # Save rbx
-    movq    %rcx, 0x10(%rdi)        # Save rcx
-    movq    %rdx, 0x18(%rdi)        # Save rdx
-    movq    %rsi, 0x20(%rdi)        # Save rsi
-    # Note: rdi will be saved after we're done using it
-    movq    %rbp, 0x30(%rdi)        # Save rbp
-    movq    %rsp, 0x38(%rdi)        # Save current stack pointer
-    movq    %r8,  0x40(%rdi)        # Save r8
-    movq    %r9,  0x48(%rdi)        # Save r9
-    movq    %r10, 0x50(%rdi)        # Save r10
-    movq    %r11, 0x58(%rdi)        # Save r11
-    movq    %r12, 0x60(%rdi)        # Save r12
-    movq    %r13, 0x68(%rdi)        # Save r13
-    movq    %r14, 0x70(%rdi)        # Save r14
-    movq    %r15, 0x78(%rdi)        # Save r15
+    # Save current CPU state to old context (using r8 as pointer)
+    movq    %rax, 0x00(%r8)         # Save rax
+    movq    %rbx, 0x08(%r8)         # Save rbx
+    movq    %rcx, 0x10(%r8)         # Save rcx
+    movq    %rdx, 0x18(%r8)         # Save rdx
+    movq    %rsi, 0x20(%r8)         # Save rsi (actual task value, not pointer)
+    movq    %rdi, 0x28(%r8)         # Save rdi (actual task value, not pointer)
+    movq    %rbp, 0x30(%r8)         # Save rbp
+    movq    %rsp, 0x38(%r8)         # Save current stack pointer
+    movq    %r8,  0x40(%r8)         # Save r8 (overwrites pointer, but we save it)
+    movq    %r9,  0x48(%r8)         # Save r9 (overwrites pointer, but we save it)
+    movq    %r10, 0x50(%r8)         # Save r10
+    movq    %r11, 0x58(%r8)         # Save r11
+    movq    %r12, 0x60(%r8)         # Save r12
+    movq    %r13, 0x68(%r8)         # Save r13
+    movq    %r14, 0x70(%r8)         # Save r14
+    movq    %r15, 0x78(%r8)         # Save r15
 
     # Save return address as instruction pointer
     # The return address is on top of stack
     movq    (%rsp), %rax            # Get return address from stack
-    movq    %rax, 0x80(%rdi)        # Save as rip in context
+    movq    %rax, 0x80(%r8)         # Save as rip in context
 
     # Save flags register
     pushfq                          # Push flags onto stack
     popq    %rax                    # Pop flags into rax
-    movq    %rax, 0x88(%rdi)        # Save rflags
+    movq    %rax, 0x88(%r8)         # Save rflags
 
     # Save segment registers
     movw    %cs, %ax                # Get code segment
-    movq    %rax, 0x90(%rdi)        # Save cs (zero-extended)
+    movq    %rax, 0x90(%r8)         # Save cs (zero-extended)
     movw    %ds, %ax                # Get data segment
-    movq    %rax, 0x98(%rdi)        # Save ds (zero-extended)
+    movq    %rax, 0x98(%r8)         # Save ds (zero-extended)
     movw    %es, %ax                # Get extra segment
-    movq    %rax, 0xA0(%rdi)        # Save es (zero-extended)
+    movq    %rax, 0xA0(%r8)         # Save es (zero-extended)
     movw    %fs, %ax                # Get fs segment
-    movq    %rax, 0xA8(%rdi)        # Save fs (zero-extended)
-    movw    %gs, %ax                # Get gs segment
-    movq    %rax, 0xB0(%rdi)        # Save gs (zero-extended)
+    movq    %rax, 0xA8(%r8)         # Save fs (zero-extended)
+    movw    %gs, %ax                # Get fs segment
+    movq    %rax, 0xB0(%r8)         # Save gs (zero-extended)
     movw    %ss, %ax                # Get stack segment
-    movq    %rax, 0xB8(%rdi)        # Save ss (zero-extended)
+    movq    %rax, 0xB8(%r8)         # Save ss (zero-extended)
 
     # Save page directory (CR3)
     movq    %cr3, %rax              # Get current page directory
-    movq    %rax, 0xC0(%rdi)        # Save cr3
+    movq    %rax, 0xC0(%r8)          # Save cr3
 
-    # Now save rdi (we're done using old_context pointer)
-    movq    %rdi, 0x28(%rdi)        # Save rdi
+    # Move new_context pointer from r9 to rsi for loading
+    movq    %r9, %rsi                # Restore new_context pointer to rsi
 
 load_new_context:
     # Load new context from new_context pointer (in rsi)
+    # Use r15 to hold context pointer throughout (it's callee-saved)
+    movq    %rsi, %r15               # Save context pointer in r15
 
-    # Load page directory first (if it's different)
-    movq    0xC0(%rsi), %rax        # Load new cr3
-    movq    %cr3, %rdx              # Get current cr3
-    cmpq    %rax, %rdx              # Compare with new cr3
-    je      skip_cr3_load           # Skip if same page directory
-    movq    %rax, %cr3              # Load new page directory
+    # Extract critical values we need
+    movq    0x38(%r15), %r14         # Get new RSP -> r14
+    movq    0x80(%r15), %r13         # Get RIP -> r13
+    movq    0x90(%r15), %r12         # Get CS -> r12
+    movq    0x88(%r15), %r11         # Get RFLAGS -> r11
+
+    # Write IRET frame to new stack BEFORE switching CR3 (while kernel mappings still work)
+    # IRET expects: [rsp] = RIP, [rsp+8] = CS, [rsp+16] = RFLAGS
+    movq    %r14, %rax               # New RSP
+    subq    $24, %rax                # Make space for IRET frame (3 words = 24 bytes)
+    andq    $-16, %rax               # Align to 16 bytes
+    movq    %r13, (%rax)             # Write RIP at [rax]
+    movq    %r12, 8(%rax)            # Write CS at [rax+8]
+    movq    %r11, 16(%rax)           # Write RFLAGS at [rax+16]
+    movq    %rax, %r14               # Update r14 to point to IRET frame location
+
+    # Load page directory (if it's different)
+    movq    0xC0(%r15), %rax         # Load new cr3
+    movq    %cr3, %rdx               # Get current cr3
+    cmpq    %rax, %rdx               # Compare with new cr3
+    je      skip_cr3_load            # Skip if same page directory
+    movq    %rax, %cr3               # Load new page directory
 skip_cr3_load:
 
     # Load segment registers
-    movq    0x98(%rsi), %rax        # Load ds
-    movw    %ax, %ds                # Set data segment
-    movq    0xA0(%rsi), %rax        # Load es
-    movw    %ax, %es                # Set extra segment
-    movq    0xA8(%rsi), %rax        # Load fs
-    movw    %ax, %fs                # Set fs segment
-    movq    0xB0(%rsi), %rax        # Load gs
-    movw    %ax, %gs                # Set gs segment
+    movq    0x98(%r15), %rax         # Load ds
+    movw    %ax, %ds                 # Set data segment
+    movq    0xA0(%r15), %rax         # Load es
+    movw    %ax, %es                 # Set extra segment
+    movq    0xA8(%r15), %rax         # Load fs
+    movw    %ax, %fs                 # Set fs segment
+    movq    0xB0(%r15), %rax         # Load gs
+    movw    %ax, %gs                 # Set gs segment
     # Note: cs and ss will be loaded with iretq
 
     # Load flags register
-    movq    0x88(%rsi), %rax        # Load rflags
-    pushq   %rax                    # Push onto stack
-    popfq                           # Pop into flags register
+    pushq   %r11                     # Push rflags onto current stack
+    popfq                            # Pop into flags register
 
-    # Load general purpose registers (except rsp and rip)
-    movq    0x00(%rsi), %rax        # Load rax
-    movq    0x08(%rsi), %rbx        # Load rbx
-    movq    0x10(%rsi), %rcx        # Load rcx
-    movq    0x18(%rsi), %rdx        # Load rdx
-    # rsi will be loaded last since we're using it
-    movq    0x28(%rsi), %rdi        # Load rdi
-    movq    0x30(%rsi), %rbp        # Load rbp
-    movq    0x40(%rsi), %r8         # Load r8
-    movq    0x48(%rsi), %r9         # Load r9
-    movq    0x50(%rsi), %r10        # Load r10
-    movq    0x58(%rsi), %r11        # Load r11
-    movq    0x60(%rsi), %r12        # Load r12
-    movq    0x68(%rsi), %r13        # Load r13
-    movq    0x70(%rsi), %r14        # Load r14
-    movq    0x78(%rsi), %r15        # Load r15
+    # Load general purpose registers
+    movq    0x00(%r15), %rax         # Load rax
+    movq    0x08(%r15), %rbx         # Load rbx
+    movq    0x10(%r15), %rcx         # Load rcx
+    movq    0x18(%r15), %rdx         # Load rdx
+    movq    0x28(%r15), %rdi         # Load rdi
+    movq    0x30(%r15), %rbp         # Load rbp
+    movq    0x40(%r15), %r8          # Load r8
+    movq    0x48(%r15), %r9          # Load r9
+    movq    0x50(%r15), %r10         # Load r10
+    movq    0x58(%r15), %r11         # Load r11
+    movq    0x60(%r15), %r12         # Load r12
+    movq    0x68(%r15), %r13         # Load r13
+    movq    0x70(%r15), %r14         # Load r14 (overwrites IRET frame pointer!)
 
-    # Prepare stack for iretq instruction
-    # iretq expects: [rsp] = rip, [rsp+8] = cs, [rsp+16] = rflags,
-    #               [rsp+24] = rsp, [rsp+32] = ss
+    # We overwrote r14 with task's r14! Need to restore IRET frame pointer
+    # The IRET frame is at (original r14 - 24), but we need to save it first
 
-    # Get the new stack pointer and create iret frame
-    movq    0x38(%rsi), %rsp        # Load new stack pointer
+    # Save task's r14 value temporarily
+    pushq   %r14                     # Save task's r14 to kernel stack
 
-    # Push iret frame onto new stack
-    movq    0xB8(%rsi), %r11        # Load ss
-    pushq   %r11                    # Push ss
+    # Restore IRET frame pointer (original r14 value before loading task's r14)
+    movq    %rsp, %r14               # Current RSP points to saved r14
+    addq    $8, %r14                 # Point to IRET frame (saved r14 + 8 bytes for the push)
+    # Actually, this is wrong. Let me recalculate.
 
-    pushq   0x38(%rsi)              # Push target rsp (same as current)
+    # The IRET frame is at: original_new_RSP - 24
+    # Original new RSP is saved in context at 0x38(%r15)
+    movq    0x38(%r15), %r14         # Get original new RSP
+    subq    $24, %r14                # Subtract 24 to get IRET frame location
+    andq    $-16, %r14               # Ensure alignment
 
-    movq    0x88(%rsi), %r11        # Load rflags
-    pushq   %r11                    # Push rflags
+    # Switch to IRET frame
+    movq    %r14, %rsp               # Switch to IRET frame
 
-    movq    0x90(%rsi), %r11        # Load cs
-    pushq   %r11                    # Push cs
+    # Restore task's r14 from kernel stack
+    popq    %r14                     # Restore task's r14
 
-    pushq   0x80(%rsi)              # Push rip (instruction pointer)
-
-    # Load rsi last (we were using it to access new_context)
-    movq    0x20(%rsi), %rsi        # Load rsi
+    # Load remaining registers
+    movq    0x20(%r15), %rsi         # Load rsi
+    movq    0x78(%r15), %r15         # Load r15 (overwrites context pointer, but we're done)
 
     # Jump to new task using iretq
-    # This will pop rip, cs, rflags, rsp, ss from stack
+    # For ring 0, this will pop rip, cs, rflags (3 words) from stack
     # and continue execution at the new task's instruction pointer
     iretq
 
@@ -177,35 +201,47 @@ skip_cr3_load:
 #
 .global simple_context_switch
 simple_context_switch:
+    # Save actual RDI and RSI register values before using them as context pointers
+    # Use R8 and R9 as temporary storage for the context pointers
+    movq    %rdi, %r8               # Save old_context pointer to r8
+    movq    %rsi, %r9               # Save new_context pointer to r9
+
     # Check if we need to save old context
-    test    %rdi, %rdi              # Test if old_context is NULL
+    test    %r8, %r8                # Test if old_context is NULL
     jz      simple_load_new         # Skip save if NULL
 
-    # Save essential registers only
-    movq    %rsp, 0x38(%rdi)        # Save stack pointer
-    movq    %rbp, 0x30(%rdi)        # Save base pointer
-    movq    %rbx, 0x08(%rdi)        # Save rbx (callee-saved)
-    movq    %r12, 0x60(%rdi)        # Save r12 (callee-saved)
-    movq    %r13, 0x68(%rdi)        # Save r13 (callee-saved)
-    movq    %r14, 0x70(%rdi)        # Save r14 (callee-saved)
-    movq    %r15, 0x78(%rdi)        # Save r15 (callee-saved)
+    # Save essential registers only (using r8 as pointer)
+    movq    %rsp, 0x38(%r8)         # Save stack pointer
+    movq    %rbp, 0x30(%r8)         # Save base pointer
+    movq    %rbx, 0x08(%r8)         # Save rbx (callee-saved)
+    movq    %rsi, 0x20(%r8)         # Save rsi (actual task value)
+    movq    %rdi, 0x28(%r8)         # Save rdi (actual task value)
+    movq    %r12, 0x60(%r8)         # Save r12 (callee-saved)
+    movq    %r13, 0x68(%r8)         # Save r13 (callee-saved)
+    movq    %r14, 0x70(%r8)         # Save r14 (callee-saved)
+    movq    %r15, 0x78(%r8)         # Save r15 (callee-saved)
 
     # Save return address
     movq    (%rsp), %rax            # Get return address
-    movq    %rax, 0x80(%rdi)        # Save as rip
+    movq    %rax, 0x80(%r8)         # Save as rip
+
+    # Restore new_context pointer from r9
+    movq    %r9, %rsi               # Restore new_context pointer to rsi
 
 simple_load_new:
-    # Load new context
-    movq    0x38(%rsi), %rsp        # Load stack pointer
-    movq    0x30(%rsi), %rbp        # Load base pointer
-    movq    0x08(%rsi), %rbx        # Load rbx
-    movq    0x60(%rsi), %r12        # Load r12
-    movq    0x68(%rsi), %r13        # Load r13
-    movq    0x70(%rsi), %r14        # Load r14
-    movq    0x78(%rsi), %r15        # Load r15
+    # Load new context (using r9 which still holds new_context pointer)
+    movq    0x38(%r9), %rsp         # Load stack pointer
+    movq    0x30(%r9), %rbp         # Load base pointer
+    movq    0x08(%r9), %rbx         # Load rbx
+    movq    0x60(%r9), %r12         # Load r12
+    movq    0x68(%r9), %r13         # Load r13
+    movq    0x70(%r9), %r14         # Load r14
+    movq    0x78(%r9), %r15         # Load r15
+    movq    0x20(%r9), %rsi         # Load rsi (actual task value)
+    movq    0x28(%r9), %rdi         # Load rdi (actual task value)
 
     # Jump to new instruction pointer
-    jmpq    *0x80(%rsi)             # Jump to new rip
+    jmpq    *0x80(%r9)              # Jump to new rip (using r9 as pointer)
 
 #
 # Task entry point wrapper

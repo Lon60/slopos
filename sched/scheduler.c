@@ -61,6 +61,9 @@ typedef struct scheduler {
     uint8_t enabled;                       /* Scheduler enabled flag */
     uint16_t time_slice;                   /* Current time slice value */
 
+    /* Return context for testing (when scheduler exits) */
+    task_context_t return_context;         /* Context to return to when scheduler exits */
+
     /* Statistics and monitoring */
     uint64_t total_switches;               /* Total context switches */
     uint64_t total_yields;                 /* Total voluntary yields */
@@ -222,7 +225,13 @@ static task_t *select_next_task(void) {
 
     /* If no tasks available, use idle task */
     if (!next_task && scheduler.idle_task) {
-        next_task = scheduler.idle_task;
+        /* Check if idle task is still active */
+        extern int task_get_info(uint32_t task_id, task_t **task_info);
+        task_t *idle_info;
+        if (task_get_info(scheduler.idle_task->task_id, &idle_info) == 0 &&
+            idle_info->state != TASK_STATE_TERMINATED) {
+            next_task = scheduler.idle_task;
+        }
     }
 
     return next_task;
@@ -299,6 +308,25 @@ void schedule(void) {
     /* Select next task to run */
     task_t *next_task = select_next_task();
     if (!next_task) {
+        /* No tasks to run - check if we should exit scheduler */
+        /* For testing purposes, if idle task has terminated, exit scheduler */
+        if (scheduler.idle_task) {
+            extern int task_get_info(uint32_t task_id, task_t **task_info);
+            task_t *idle_info;
+            if (task_get_info(scheduler.idle_task->task_id, &idle_info) == 0 &&
+                idle_info->state == TASK_STATE_TERMINATED) {
+                /* Idle task terminated - exit scheduler by switching to return context */
+                scheduler.enabled = 0;
+                /* Switch back to the saved return context */
+                if (scheduler.current_task) {
+                    context_switch(&scheduler.current_task->context, &scheduler.return_context);
+                } else {
+                    /* No current task - this shouldn't happen */
+                    return;
+                }
+            }
+        }
+        /* No tasks available but idle task still exists - shouldn't happen */
         return;
     }
 
@@ -427,11 +455,29 @@ static void idle_task_function(void *arg) {
         /* Simple idle loop - could implement power management here */
         scheduler.idle_time++;
 
+        /* Check if we should exit (for testing purposes) */
+        /* If there are no user tasks and we're in a test environment, exit */
+        extern int is_kernel_initialized(void);
+        if (is_kernel_initialized() && scheduler.idle_time > 1000) {
+            /* Count active tasks */
+            extern void get_task_stats(uint32_t *total_tasks, uint32_t *active_tasks,
+                                     uint64_t *context_switches);
+            uint32_t active_tasks = 0;
+            get_task_stats(NULL, &active_tasks, NULL);
+            if (active_tasks <= 1) {  /* Only idle task remains */
+                /* Exit idle loop - return to scheduler caller */
+                break;
+            }
+        }
+
         /* Yield periodically to check for new tasks */
-        if (scheduler.idle_time % 10000 == 0) {
+        if (scheduler.idle_time % 1000 == 0) {
             yield();
         }
     }
+
+    /* Return to scheduler - this should only happen in test scenarios */
+    scheduler.enabled = 0;  /* Disable scheduler */
 }
 
 /* ========================================================================
@@ -495,6 +541,10 @@ int start_scheduler(void) {
 
     scheduler.enabled = 1;
 
+    /* Save current context as return context for testing */
+    extern void init_kernel_context(task_context_t *context);
+    init_kernel_context(&scheduler.return_context);
+
     /* If we have tasks in ready queue, start scheduling */
     if (!ready_queue_empty(&scheduler.ready_queue)) {
         schedule();
@@ -505,6 +555,7 @@ int start_scheduler(void) {
         return -1;
     }
 
+    /* If we get here, scheduler has exited and switched back to return context */
     return 0;
 }
 

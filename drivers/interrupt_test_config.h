@@ -40,9 +40,11 @@ enum interrupt_test_verbosity {
 #define INTERRUPT_TEST_SUITE_BASIC      (1u << 0)
 #define INTERRUPT_TEST_SUITE_MEMORY     (1u << 1)
 #define INTERRUPT_TEST_SUITE_CONTROL    (1u << 2)
+#define INTERRUPT_TEST_SUITE_SCHEDULER   (1u << 3)
 #define INTERRUPT_TEST_SUITE_ALL        (INTERRUPT_TEST_SUITE_BASIC | \
                                          INTERRUPT_TEST_SUITE_MEMORY | \
-                                         INTERRUPT_TEST_SUITE_CONTROL)
+                                         INTERRUPT_TEST_SUITE_CONTROL | \
+                                         INTERRUPT_TEST_SUITE_SCHEDULER)
 
 struct interrupt_test_config {
     int enabled;
