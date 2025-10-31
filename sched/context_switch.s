@@ -166,29 +166,44 @@ skip_cr3_load:
     # We overwrote r14 with task's r14! Need to restore IRET frame pointer
     # The IRET frame is at (original r14 - 24), but we need to save it first
 
-    # Save task's r14 value temporarily
-    pushq   %r14                     # Save task's r14 to kernel stack
+    # Save task's r14 value temporarily to kernel stack
+    pushq   %r14                     # Save task's r14 to kernel stack (before we recalculate IRET frame)
 
-    # Restore IRET frame pointer (original r14 value before loading task's r14)
-    movq    %rsp, %r14               # Current RSP points to saved r14
-    addq    $8, %r14                 # Point to IRET frame (saved r14 + 8 bytes for the push)
-    # Actually, this is wrong. Let me recalculate.
-
-    # The IRET frame is at: original_new_RSP - 24
+    # Calculate IRET frame location: original_new_RSP - 24
     # Original new RSP is saved in context at 0x38(%r15)
     movq    0x38(%r15), %r14         # Get original new RSP
-    subq    $24, %r14                # Subtract 24 to get IRET frame location
-    andq    $-16, %r14               # Ensure alignment
+    subq    $24, %r14                # Subtract 24 to get IRET frame location (RIP, CS, RFLAGS)
+    andq    $-16, %r14               # Ensure 16-byte alignment
 
+    # Restore task's r14 from kernel stack (before switching to IRET frame)
+    popq    %rax                     # Pop task's r14 from kernel stack
+    pushq   %rax                     # Save it again (we'll need it after IRET frame switch)
+    
     # Switch to IRET frame
     movq    %r14, %rsp               # Switch to IRET frame
 
-    # Restore task's r14 from kernel stack
-    popq    %r14                     # Restore task's r14
+    # Restore task's r14 from the saved value on kernel stack
+    # But wait - we just switched stacks, so the saved value is on the old stack
+    # Actually, we pushed it to kernel stack, then switched to IRET frame
+    # So we need to access it differently. Let's just keep it in a register.
+    # Actually, let's just restore it after switching, but we need to get it from somewhere.
+    # Solution: Save it in a register that won't be overwritten, or recalculate from context.
+    # For now, let's get it from the context again after we switch stacks.
+    # Actually, we can just leave it in the register we saved it in (rax), then restore it.
+    movq    %rax, %r14               # Restore task's r14 (it was in rax)
 
+    # Load SS before overwriting r15 (we have the context in r15 at this point)
+    movq    0xB8(%r15), %rax         # Get SS from context (offset 0xB8)
+    pushq   %rax                     # Save SS temporarily on stack
+    
     # Load remaining registers
     movq    0x20(%r15), %rsi         # Load rsi
     movq    0x78(%r15), %r15         # Load r15 (overwrites context pointer, but we're done)
+    
+    # Load SS from stack before iretq
+    # In 64-bit mode, iretq only pops RIP, CS, and RFLAGS - SS must be loaded manually
+    popq    %rax                     # Restore SS value
+    movw    %ax, %ss                 # Load stack segment register
 
     # Jump to new task using iretq
     # For ring 0, this will pop rip, cs, rflags (3 words) from stack

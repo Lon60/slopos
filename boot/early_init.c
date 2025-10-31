@@ -17,6 +17,9 @@
 #include "../drivers/apic.h"
 #include "../drivers/irq.h"
 #include "../drivers/interrupt_test.h"
+#include "../sched/task.h"
+#include "../sched/scheduler.h"
+#include "../shell/shell.h"
 
 // Forward declarations for other modules
 extern void verify_cpu_state(void);
@@ -332,19 +335,49 @@ current_location:
 
     // Initialize scheduler subsystem (with SIMD-disabled compiler flags)
     kprintln("Initializing scheduler subsystem...");
-    extern int init_task_manager(void);
-    extern int init_scheduler(void);
     
     if (init_task_manager() != 0) {
         kprintln("ERROR: Task manager initialization failed");
+        kernel_panic("Task manager initialization failed");
     } else {
         kprintln("Task manager initialized successfully!");
     }
     
     if (init_scheduler() != 0) {
         kprintln("ERROR: Scheduler initialization failed");
+        kernel_panic("Scheduler initialization failed");
     } else {
         kprintln("Scheduler initialized successfully!");
+    }
+    
+    // Create shell task
+    kprintln("Creating shell task...");
+    uint32_t shell_task_id = task_create("shell", shell_main, NULL, 5, 0x02);  /* Medium priority, kernel mode */
+    
+    if (shell_task_id == INVALID_TASK_ID) {
+        kprintln("ERROR: Failed to create shell task");
+        kernel_panic("Shell task creation failed");
+    }
+    
+    // Get shell task info and schedule it
+    task_t *shell_task_info;
+    if (task_get_info(shell_task_id, &shell_task_info) != 0) {
+        kprintln("ERROR: Failed to get shell task info");
+        kernel_panic("Shell task info retrieval failed");
+    }
+    
+    if (schedule_task(shell_task_info) != 0) {
+        kprintln("ERROR: Failed to schedule shell task");
+        kernel_panic("Shell task scheduling failed");
+    }
+    
+    kprintln("Shell task created and scheduled successfully!");
+    
+    // Create idle task
+    kprintln("Creating idle task...");
+    if (create_idle_task() != 0) {
+        kprintln("ERROR: Failed to create idle task");
+        kernel_panic("Idle task creation failed");
     }
     
     kprintln("");
@@ -356,12 +389,20 @@ current_location:
     kprintln("  - Memory management");
     kprintln("  - Debug & diagnostics");
     kprintln("  - Scheduler (cooperative multitasking)");
+    kprintln("  - Shell (interactive REPL)");
     kprintln("");
- kprintln("Kernel initialization complete - ALL SYSTEMS OPERATIONAL!");
-    kprintln("System ready for next development phase.");
-
-    // Enter idle loop
-    kprintln("Entering idle loop (HLT)...");
+    kprintln("Kernel initialization complete - ALL SYSTEMS OPERATIONAL!");
+    kprintln("Starting scheduler...");
+    kprintln("");
+    
+    // Start scheduler (this will switch to shell task and run it)
+    if (start_scheduler() != 0) {
+        kprintln("ERROR: Scheduler startup failed");
+        kernel_panic("Scheduler startup failed");
+    }
+    
+    // If we get here, scheduler has exited (shouldn't happen in normal operation)
+    kprintln("WARNING: Scheduler exited unexpectedly");
     while (1) {
         __asm__ volatile ("hlt");  // Halt until next interrupt
     }

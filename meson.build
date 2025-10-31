@@ -130,14 +130,20 @@ sched_sources += files(
   'sched/context_switch.s'
 )
 
+# Shell directory
+shell_dir = meson.current_source_dir() / 'shell'
+shell_sources = files(
+  'shell/shell.c'
+)
+
 # Kernel main sources (root directory)
 kernel_sources += files()  # Will be populated when source files exist
 
 # Combine all source files
-all_sources = boot_sources + mm_sources + video_sources + drivers_sources + sched_sources + kernel_sources + lib_sources
+all_sources = boot_sources + mm_sources + video_sources + drivers_sources + sched_sources + shell_sources + kernel_sources + lib_sources
 
 # Include directories
-inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers', 'sched', 'lib')
+inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers', 'sched', 'shell', 'lib')
 
 # Custom target for assembly files (when they exist)
 # This will be used for boot assembly code that needs special handling
