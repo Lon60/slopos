@@ -1260,17 +1260,35 @@ __attribute__((noinline)) int test_context_switch_balance(void) {
 int run_scheduler_tests(void) {
     kprint("INTERRUPT_TEST: Running scheduler tests\n");
 
+    int total_passed = 0;
+
     /* Run the smoke test directly to avoid test framework issues */
     extern int run_context_switch_smoke_test(void);
     int result = run_context_switch_smoke_test();
-
     if (result == 0) {
-        kprint("INTERRUPT_TEST: Scheduler tests passed\n");
-        return 1; /* 1 test passed */
+        total_passed++;
+    } else {
+        kprint("INTERRUPT_TEST: Context switch smoke test failed\n");
+    }
+
+    /* Run VM manager regression tests */
+    extern int run_vm_manager_tests(void);
+    int vm_tests_passed = run_vm_manager_tests();
+    if (vm_tests_passed > 0) {
+        total_passed += vm_tests_passed;
+    } else {
+        kprint("INTERRUPT_TEST: VM manager tests failed\n");
+    }
+
+    if (total_passed > 0) {
+        kprint("INTERRUPT_TEST: Scheduler tests completed: ");
+        kprint_decimal(total_passed);
+        kprint(" tests passed\n");
     } else {
         kprint("INTERRUPT_TEST: Scheduler tests failed\n");
-        return 0; /* 0 tests passed */
     }
+
+    return total_passed;
 }
 
 /*

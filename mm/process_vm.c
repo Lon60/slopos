@@ -187,7 +187,7 @@ static void unmap_user_range(uint64_t start_addr, uint64_t end_addr) {
  * Find process VM descriptor by process ID
  */
 static process_vm_t *find_process_vm(uint32_t process_id) {
-    for (uint32_t i = 0; i < vm_manager.num_processes; i++) {
+    for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
         if (vm_manager.processes[i].process_id == process_id) {
             return &vm_manager.processes[i];
         }
@@ -277,6 +277,20 @@ uint32_t create_process_vm(void) {
         return INVALID_PROCESS_ID;
     }
 
+    /* Find first free process slot */
+    process_vm_t *process = NULL;
+    for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+        if (vm_manager.processes[i].process_id == INVALID_PROCESS_ID) {
+            process = &vm_manager.processes[i];
+            break;
+        }
+    }
+
+    if (!process) {
+        kprint("create_process_vm: No free process slots available\n");
+        return INVALID_PROCESS_ID;
+    }
+
     /* Allocate new page directory */
     uint64_t pml4_phys = alloc_page_frame(0);
     if (!pml4_phys) {
@@ -295,8 +309,6 @@ uint32_t create_process_vm(void) {
         pml4->entries[i] = 0;
     }
 
-    /* Find free process slot */
-    process_vm_t *process = &vm_manager.processes[vm_manager.num_processes];
     uint32_t process_id = vm_manager.next_process_id++;
 
     /* Allocate process page directory descriptor */
@@ -389,12 +401,18 @@ uint32_t create_process_vm(void) {
 /*
  * Destroy a process virtual memory space
  * Frees all allocated pages and removes from system
+ * Idempotent: safe to call multiple times for the same PID
  */
 int destroy_process_vm(uint32_t process_id) {
     process_vm_t *process = find_process_vm(process_id);
     if (!process) {
-        kprint("destroy_process_vm: Process not found\n");
-        return -1;
+        /* Already destroyed or never existed - not an error for idempotency */
+        return 0;
+    }
+
+    /* Check if already destroyed (double-free protection) */
+    if (process->process_id == INVALID_PROCESS_ID) {
+        return 0;
     }
 
     kprint("Destroying process VM space for PID ");
@@ -435,10 +453,17 @@ int destroy_process_vm(uint32_t process_id) {
         }
     }
 
-    /* Mark process slot as free */
+    /* Update active_process if it points to this process */
+    if (vm_manager.active_process == process) {
+        vm_manager.active_process = NULL;
+    }
+
+    /* Mark process slot as free and clear state */
     process->process_id = INVALID_PROCESS_ID;
     process->vma_list = NULL;
     process->next = NULL;
+    process->total_pages = 0;
+    process->flags = 0;
     vm_manager.num_processes--;
 
     return 0;
