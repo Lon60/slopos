@@ -61,17 +61,7 @@ typedef struct free_list {
     uint32_t size_class;          /* Size class for this list */
 } free_list_t;
 
-/* Heap statistics */
-typedef struct heap_stats {
-    uint64_t total_size;          /* Total heap size */
-    uint64_t allocated_size;      /* Currently allocated bytes */
-    uint64_t free_size;           /* Currently free bytes */
-    uint32_t total_blocks;        /* Total number of blocks */
-    uint32_t allocated_blocks;    /* Number of allocated blocks */
-    uint32_t free_blocks;         /* Number of free blocks */
-    uint32_t allocation_count;    /* Total allocations made */
-    uint32_t free_count;          /* Total frees made */
-} heap_stats_t;
+/* Heap statistics structure is now in kernel_heap.h */
 
 /* Kernel heap manager */
 typedef struct kernel_heap {
@@ -298,6 +288,8 @@ static void reinsert_free_block(heap_block_t *block) {
 
 /*
  * Find suitable block in free lists
+ * Iterates through each size class list to find a block large enough,
+ * not just checking the head node
  */
 static heap_block_t *find_free_block(uint32_t size) {
     uint32_t size_class = get_size_class(size);
@@ -305,13 +297,34 @@ static heap_block_t *find_free_block(uint32_t size) {
     /* Search from appropriate size class up to larger ones */
     for (uint32_t i = size_class; i < 16; i++) {
         free_list_t *list = &kernel_heap.free_lists[i];
+        heap_block_t *candidate = list->head;
 
-        if (list->head && list->head->size >= size) {
-            return list->head;
+        /* Walk through the entire list for this size class */
+        while (candidate) {
+            if (candidate->size >= size) {
+                return candidate;
+            }
+            candidate = candidate->next;
         }
     }
 
     return NULL;
+}
+
+/*
+ * Check if there's sufficient free space in heap to satisfy a request
+ * Returns the total free size available
+ */
+static uint64_t check_available_free_space(void) {
+    uint64_t total_free = 0;
+    for (uint32_t i = 0; i < 16; i++) {
+        heap_block_t *cursor = kernel_heap.free_lists[i].head;
+        while (cursor) {
+            total_free += cursor->size;
+            cursor = cursor->next;
+        }
+    }
+    return total_free;
 }
 
 /* ========================================================================
@@ -419,6 +432,16 @@ void *kmalloc(size_t size) {
 
     /* Expand heap if no suitable block found */
     if (!block) {
+        /* Diagnostic: check if we're expanding despite having free space */
+        uint64_t available_free = check_available_free_space();
+        if (available_free >= total_size && heap_diagnostics_enabled) {
+            kprint("HEAP_DIAG: Expanding heap by ");
+            kprint_decimal(total_size);
+            kprint(" bytes, but ");
+            kprint_decimal(available_free);
+            kprint(" bytes are available in free lists (fragmentation issue)\n");
+        }
+        
         if (expand_heap(total_size) != 0) {
             return NULL;
         }

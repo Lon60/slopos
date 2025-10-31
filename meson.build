@@ -88,7 +88,8 @@ mm_sources += files(
   'mm/vmem_regions.c',
   'mm/memory_init.c',
   'mm/phys_virt.c',
-  'mm/test_process_vm.c'
+  'mm/test_process_vm.c',
+  'mm/test_kernel_heap.c'
 )
 
 # Video/framebuffer directory

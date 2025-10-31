@@ -1280,6 +1280,15 @@ int run_scheduler_tests(void) {
         kprint("INTERRUPT_TEST: VM manager tests failed\n");
     }
 
+    /* Run kernel heap regression tests */
+    extern int run_kernel_heap_tests(void);
+    int heap_tests_passed = run_kernel_heap_tests();
+    if (heap_tests_passed > 0) {
+        total_passed += heap_tests_passed;
+    } else {
+        kprint("INTERRUPT_TEST: Kernel heap tests failed\n");
+    }
+
     if (total_passed > 0) {
         kprint("INTERRUPT_TEST: Scheduler tests completed: ");
         kprint_decimal(total_passed);
