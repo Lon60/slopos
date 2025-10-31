@@ -14,6 +14,7 @@
 
 /* Forward declarations from context_switch.s */
 extern void context_switch(void *old_context, void *new_context);
+extern void simple_context_switch(void *old_context, void *new_context);
 
 /* Forward declarations from process_vm.c */
 extern process_page_dir_t *process_vm_get_page_dir(uint32_t process_id);

@@ -109,31 +109,40 @@ load_new_context:
     # Use r15 to hold context pointer throughout (it's callee-saved)
     movq    %rsi, %r15               # Save context pointer in r15
 
-    # Extract critical values we need
+    # Extract critical values we need BEFORE loading registers
     movq    0x38(%r15), %r14         # Get new RSP -> r14
     movq    0x80(%r15), %r13         # Get RIP -> r13
     movq    0x90(%r15), %r12         # Get CS -> r12
     movq    0x88(%r15), %r11         # Get RFLAGS -> r11
 
-    # Write IRET frame to new stack BEFORE switching CR3 (while kernel mappings still work)
+    # Calculate IRET frame location on new task's stack (we'll write it after CR3 switch)
     # IRET expects: [rsp] = RIP, [rsp+8] = CS, [rsp+16] = RFLAGS
-    movq    %r14, %rax               # New RSP
-    subq    $24, %rax                # Make space for IRET frame (3 words = 24 bytes)
-    andq    $-16, %rax               # Align to 16 bytes
-    movq    %r13, (%rax)             # Write RIP at [rax]
-    movq    %r12, 8(%rax)            # Write CS at [rax+8]
-    movq    %r11, 16(%rax)           # Write RFLAGS at [rax+16]
-    movq    %rax, %r14               # Update r14 to point to IRET frame location
-
-    # Load page directory (if it's different)
+    # Formula: (rsp - 24) & ~0xF (16-byte aligned)
+    
+    # Load page directory first (if it's different)
     movq    0xC0(%r15), %rax         # Load new cr3
     movq    %cr3, %rdx               # Get current cr3
     cmpq    %rax, %rdx               # Compare with new cr3
     je      skip_cr3_load            # Skip if same page directory
     movq    %rax, %cr3               # Load new page directory
 skip_cr3_load:
+    
+    # Now calculate and write IRET frame AFTER CR3 switch (using correct page tables)
+    movq    %r14, %rax               # New RSP from context
+    subq    $24, %rax                # Make space for IRET frame (3 words = 24 bytes)
+    andq    $-16, %rax               # Align to 16 bytes
+    # rax now holds the IRET frame location on the new task's stack
+    # Save this location - we MUST use the exact same location, not recalculate it!
+    movq    %rax, %r8                # Save IRET frame location in r8 (before loading registers)
 
-    # Load segment registers
+    # Write IRET frame to new stack AFTER switching CR3 (using correct page tables)
+    movq    %r13, (%rax)             # Write RIP at [rax]
+    # Ensure CS selector is properly zero-extended (only lower 16 bits should be set)
+    movzwq  %r12w, %rcx              # Zero-extend CS selector (16-bit to 64-bit)
+    movq    %rcx, 8(%rax)            # Write CS at [rax+8] (zero-extended 16-bit value)
+    movq    %r11, 16(%rax)           # Write RFLAGS at [rax+16]
+
+    # Load segment registers BEFORE loading general registers
     movq    0x98(%r15), %rax         # Load ds
     movw    %ax, %ds                 # Set data segment
     movq    0xA0(%r15), %rax         # Load es
@@ -142,73 +151,40 @@ skip_cr3_load:
     movw    %ax, %fs                 # Set fs segment
     movq    0xB0(%r15), %rax         # Load gs
     movw    %ax, %gs                 # Set gs segment
-    # Note: cs and ss will be loaded with iretq
+    # Note: cs and ss are not loaded - they remain at kernel values
+    # Note: rflags is not loaded - it remains as set
 
-    # Load flags register
-    pushq   %r11                     # Push rflags onto current stack
-    popfq                            # Pop into flags register
-
-    # Load general purpose registers
+    # Load ALL general purpose registers from context
     movq    0x00(%r15), %rax         # Load rax
     movq    0x08(%r15), %rbx         # Load rbx
     movq    0x10(%r15), %rcx         # Load rcx
     movq    0x18(%r15), %rdx         # Load rdx
+    movq    0x20(%r15), %rsi         # Load rsi
     movq    0x28(%r15), %rdi         # Load rdi
     movq    0x30(%r15), %rbp         # Load rbp
+    movq    0x38(%r15), %rsp         # Load rsp
     movq    0x40(%r15), %r8          # Load r8
     movq    0x48(%r15), %r9          # Load r9
     movq    0x50(%r15), %r10         # Load r10
     movq    0x58(%r15), %r11         # Load r11
     movq    0x60(%r15), %r12         # Load r12
     movq    0x68(%r15), %r13         # Load r13
-    movq    0x70(%r15), %r14         # Load r14 (overwrites IRET frame pointer!)
+    movq    0x70(%r15), %r14         # Load r14
+    # Don't load r15 yet - we need it to get RIP and RFLAGS
 
-    # We overwrote r14 with task's r14! Need to restore IRET frame pointer
-    # The IRET frame is at (original r14 - 24), but we need to save it first
+    # Get RIP and RFLAGS before loading r15
+    movq    0x80(%r15), %r13         # Load RIP into r13 (overwrites task's r13)
+    movq    0x88(%r15), %r11         # Load RFLAGS into r11 temporarily
 
-    # Save task's r14 value temporarily to kernel stack
-    pushq   %r14                     # Save task's r14 to kernel stack (before we recalculate IRET frame)
+    # Restore RFLAGS
+    pushq   %r11                    # Push RFLAGS onto stack
+    popfq                           # Pop into RFLAGS register
 
-    # Calculate IRET frame location: original_new_RSP - 24
-    # Original new RSP is saved in context at 0x38(%r15)
-    movq    0x38(%r15), %r14         # Get original new RSP
-    subq    $24, %r14                # Subtract 24 to get IRET frame location (RIP, CS, RFLAGS)
-    andq    $-16, %r14               # Ensure 16-byte alignment
+    # Now load r15
+    movq    0x78(%r15), %r15         # Load r15 (overwrites context pointer)
 
-    # Restore task's r14 from kernel stack (before switching to IRET frame)
-    popq    %rax                     # Pop task's r14 from kernel stack
-    pushq   %rax                     # Save it again (we'll need it after IRET frame switch)
-    
-    # Switch to IRET frame
-    movq    %r14, %rsp               # Switch to IRET frame
-
-    # Restore task's r14 from the saved value on kernel stack
-    # But wait - we just switched stacks, so the saved value is on the old stack
-    # Actually, we pushed it to kernel stack, then switched to IRET frame
-    # So we need to access it differently. Let's just keep it in a register.
-    # Actually, let's just restore it after switching, but we need to get it from somewhere.
-    # Solution: Save it in a register that won't be overwritten, or recalculate from context.
-    # For now, let's get it from the context again after we switch stacks.
-    # Actually, we can just leave it in the register we saved it in (rax), then restore it.
-    movq    %rax, %r14               # Restore task's r14 (it was in rax)
-
-    # Load SS before overwriting r15 (we have the context in r15 at this point)
-    movq    0xB8(%r15), %rax         # Get SS from context (offset 0xB8)
-    pushq   %rax                     # Save SS temporarily on stack
-    
-    # Load remaining registers
-    movq    0x20(%r15), %rsi         # Load rsi
-    movq    0x78(%r15), %r15         # Load r15 (overwrites context pointer, but we're done)
-    
-    # Load SS from stack before iretq
-    # In 64-bit mode, iretq only pops RIP, CS, and RFLAGS - SS must be loaded manually
-    popq    %rax                     # Restore SS value
-    movw    %ax, %ss                 # Load stack segment register
-
-    # Jump to new task using iretq
-    # For ring 0, this will pop rip, cs, rflags (3 words) from stack
-    # and continue execution at the new task's instruction pointer
-    iretq
+    # Jump to new instruction pointer
+    jmpq    *%r13                    # Jump to new rip (stored in r13)
 
 #
 # Alternative simplified context switch for debugging
