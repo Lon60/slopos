@@ -103,8 +103,6 @@ static inline int buffer_empty(keyboard_buffer_t *buf) {
  * Returns 0 on success, -1 if buffer is full
  */
 static int buffer_push(keyboard_buffer_t *buf, char c) {
-    /* Disable interrupts during critical section */
-    __asm__ volatile ("cli");
     
     if (buffer_full(buf)) {
         /* Buffer full - drop oldest character (overwrite tail) */
@@ -115,9 +113,6 @@ static int buffer_push(keyboard_buffer_t *buf, char c) {
     
     buf->data[buf->head] = c;
     buf->head = (buf->head + 1) % KEYBOARD_BUFFER_SIZE;
-    
-    /* Re-enable interrupts */
-    __asm__ volatile ("sti");
     
     return 0;
 }
@@ -148,8 +143,11 @@ static char buffer_pop(keyboard_buffer_t *buf) {
 /*
  * Check if buffer has data (non-destructive)
  */
-static inline int buffer_has_data(keyboard_buffer_t *buf) {
-    return buf->count > 0;
+static int buffer_has_data(keyboard_buffer_t *buf) {
+    __asm__ volatile ("cli");
+    int has_data = buf->count > 0;
+    __asm__ volatile ("sti");
+    return has_data;
 }
 
 /* ========================================================================
