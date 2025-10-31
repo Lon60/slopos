@@ -114,6 +114,7 @@ drivers_sources += files(
   'drivers/apic.c',
   'drivers/irq.c',
   'drivers/keyboard.c',
+  'drivers/tty.c',
   'drivers/interrupt_test.c',
   'drivers/interrupt_test_config.c',
   'drivers/exceptions.s',
