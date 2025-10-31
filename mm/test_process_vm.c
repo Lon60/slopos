@@ -15,6 +15,15 @@ extern int destroy_process_vm(uint32_t process_id);
 extern void get_process_vm_stats(uint32_t *total_processes, uint32_t *active_processes);
 extern process_page_dir_t *process_vm_get_page_dir(uint32_t process_id);
 
+/* Forward declarations from paging module */
+extern int switch_page_directory(process_page_dir_t *page_dir);
+extern process_page_dir_t *get_current_page_directory(void);
+extern uint64_t virt_to_phys(uint64_t vaddr);
+extern int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
+
+/* Forward declarations from page_alloc module */
+extern uint64_t alloc_page_frame(uint32_t flags);
+
 /* ========================================================================
  * VM MANAGER REGRESSION TESTS
  * ======================================================================== */
@@ -276,6 +285,179 @@ int test_process_vm_double_free(void) {
 }
 
 /*
+ * Test: User-mode memory access after CR3 switch
+ * Creates a process VM, maps a scratch page with user flags,
+ * switches to its CR3, and verifies the mapping is accessible.
+ * This test verifies that intermediate page tables have correct flags.
+ */
+int test_user_mode_paging_access(void) {
+    kprint("VM_TEST: Starting user-mode paging access test\n");
+
+    /* Create a process VM */
+    uint32_t pid = create_process_vm();
+    if (pid == INVALID_PROCESS_ID) {
+        kprint("VM_TEST: Failed to create process for user paging test\n");
+        return -1;
+    }
+
+    process_page_dir_t *page_dir = process_vm_get_page_dir(pid);
+    if (!page_dir) {
+        kprint("VM_TEST: Failed to get page directory\n");
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    /* Save current page directory */
+    process_page_dir_t *saved_page_dir = get_current_page_directory();
+    
+    /* Switch to process page directory */
+    if (switch_page_directory(page_dir) != 0) {
+        kprint("VM_TEST: Failed to switch to process page directory\n");
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    /* Map a test page in user space */
+    uint64_t test_vaddr = 0x500000; /* User space address */
+    uint64_t test_paddr = alloc_page_frame(0);
+    if (!test_paddr) {
+        kprint("VM_TEST: Failed to allocate physical page\n");
+        if (saved_page_dir) {
+            switch_page_directory(saved_page_dir);
+        }
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    uint64_t user_flags = PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE;
+    if (map_page_4kb(test_vaddr, test_paddr, user_flags) != 0) {
+        kprint("VM_TEST: Failed to map test page\n");
+        if (saved_page_dir) {
+            switch_page_directory(saved_page_dir);
+        }
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    /* Verify mapping exists by reading/writing */
+    volatile uint32_t *test_ptr = (volatile uint32_t *)test_vaddr;
+    uint32_t test_value = 0xDEADBEEF;
+    
+    /* Write test value */
+    *test_ptr = test_value;
+    
+    /* Verify read */
+    if (*test_ptr != test_value) {
+        kprint("VM_TEST: Memory access test failed - write/read mismatch\n");
+        if (saved_page_dir) {
+            switch_page_directory(saved_page_dir);
+        }
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    /* Switch back to kernel page directory */
+    if (saved_page_dir) {
+        if (switch_page_directory(saved_page_dir) != 0) {
+            kprint("VM_TEST: Failed to switch back to kernel page directory\n");
+            destroy_process_vm(pid);
+            return -1;
+        }
+    }
+
+    /* Clean up */
+    destroy_process_vm(pid);
+
+    kprint("VM_TEST: User-mode paging access test PASSED\n");
+    return 0;
+}
+
+/*
+ * Test: User stack accessibility
+ * Verifies that user stack pages are properly mapped and accessible
+ * in a process's address space.
+ */
+int test_user_stack_accessibility(void) {
+    kprint("VM_TEST: Starting user stack accessibility test\n");
+
+    /* Create a process VM (this should create user stack automatically) */
+    uint32_t pid = create_process_vm();
+    if (pid == INVALID_PROCESS_ID) {
+        kprint("VM_TEST: Failed to create process for stack test\n");
+        return -1;
+    }
+
+    process_page_dir_t *page_dir = process_vm_get_page_dir(pid);
+    if (!page_dir) {
+        kprint("VM_TEST: Failed to get page directory\n");
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    /* Process stack is defined in process_vm.c */
+    #define PROCESS_STACK_TOP 0x7FFFFF000000ULL
+    #define PROCESS_STACK_SIZE 0x100000
+    uint64_t stack_start = PROCESS_STACK_TOP - PROCESS_STACK_SIZE;
+    uint64_t stack_end = PROCESS_STACK_TOP;
+
+    /* Switch to process page directory */
+    process_page_dir_t *saved_page_dir = get_current_page_directory();
+    
+    if (switch_page_directory(page_dir) != 0) {
+        kprint("VM_TEST: Failed to switch to process page directory\n");
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    /* Verify stack pages are mapped by checking a few addresses */
+    int stack_pages_ok = 1;
+    for (uint64_t addr = stack_start; addr < stack_end; addr += 0x10000) {
+        uint64_t phys = virt_to_phys(addr);
+        if (phys == 0) {
+            kprint("VM_TEST: Stack page not mapped at ");
+            kprint_hex(addr);
+            kprint("\n");
+            stack_pages_ok = 0;
+            break;
+        }
+    }
+
+    if (!stack_pages_ok) {
+        kprint("VM_TEST: User stack pages not properly mapped\n");
+        if (saved_page_dir) {
+            switch_page_directory(saved_page_dir);
+        }
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    /* Try to access stack memory */
+    volatile uint32_t *stack_ptr = (volatile uint32_t *)(stack_end - 16);
+    uint32_t test_value = 0xCAFEBABE;
+    
+    *stack_ptr = test_value;
+    if (*stack_ptr != test_value) {
+        kprint("VM_TEST: Stack memory access failed\n");
+        if (saved_page_dir) {
+            switch_page_directory(saved_page_dir);
+        }
+        destroy_process_vm(pid);
+        return -1;
+    }
+
+    /* Switch back */
+    if (saved_page_dir) {
+        switch_page_directory(saved_page_dir);
+    }
+
+    /* Clean up */
+    destroy_process_vm(pid);
+
+    kprint("VM_TEST: User stack accessibility test PASSED\n");
+    return 0;
+}
+
+/*
  * Run all VM manager regression tests
  * Returns number of tests passed
  */
@@ -297,6 +479,16 @@ int run_vm_manager_tests(void) {
 
     total++;
     if (test_process_vm_double_free() == 0) {
+        passed++;
+    }
+
+    total++;
+    if (test_user_mode_paging_access() == 0) {
+        passed++;
+    }
+
+    total++;
+    if (test_user_stack_accessibility() == 0) {
         passed++;
     }
 

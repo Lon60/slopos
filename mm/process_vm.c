@@ -419,6 +419,16 @@ int destroy_process_vm(uint32_t process_id) {
     kprint_decimal(process_id);
     kprint("\n");
 
+    /* Switch to process's page directory for unmapping */
+    extern process_page_dir_t *get_current_page_directory(void);
+    extern int switch_page_directory(process_page_dir_t *page_dir);
+    process_page_dir_t *saved_page_dir = get_current_page_directory();
+    
+    if (process->page_dir && switch_page_directory(process->page_dir) != 0) {
+        kprint("destroy_process_vm: Failed to switch to process page directory\n");
+        /* Continue with cleanup even if switch fails */
+    }
+
     /* Free all VMAs */
     vm_area_t *vma = process->vma_list;
     while (vma) {
@@ -430,6 +440,11 @@ int destroy_process_vm(uint32_t process_id) {
         vma = next;
     }
     process->vma_list = NULL;
+
+    /* Switch back to kernel page directory */
+    if (saved_page_dir && saved_page_dir != process->page_dir) {
+        switch_page_directory(saved_page_dir);
+    }
 
     /* Free page directory structures */
     if (process->page_dir) {

@@ -348,6 +348,8 @@ int map_page_2mb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
 /*
  * Map a 4KB page in current process page directory
  * Allocates intermediate paging structures on demand
+ * For user space mappings, intermediate tables must have PAGE_USER flag
+ * to allow user mode to traverse the page tables
  */
 int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
     if (!current_page_dir || !current_page_dir->pml4) {
@@ -359,6 +361,11 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
         kprint("map_page_4kb: Addresses must be 4KB aligned\n");
         return -1;
     }
+
+    /* Determine flags for intermediate tables based on whether this is user space */
+    int is_user_mapping = (flags & PAGE_USER) && is_user_address(vaddr);
+    uint64_t intermediate_flags = is_user_mapping ? 
+        (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) : PAGE_KERNEL_RW;
 
     uint16_t pml4_idx = pml4_index(vaddr);
     uint16_t pdpt_idx = pdpt_index(vaddr);
@@ -391,11 +398,16 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
             pdpt->entries[i] = 0;
         }
 
-        pml4->entries[pml4_idx] = pdpt_phys | PAGE_KERNEL_RW;
+        pml4->entries[pml4_idx] = pdpt_phys | intermediate_flags;
         allocated_pdpt = 1;
     } else {
         pdpt_phys = pte_address(pml4_entry);
         pdpt = phys_to_page_table_ptr(pdpt_phys);
+        
+        /* Update existing PML4 entry flags if needed for user mapping */
+        if (is_user_mapping && !(pml4_entry & PAGE_USER)) {
+            pml4->entries[pml4_idx] = (pml4_entry & ~0xFFF) | intermediate_flags;
+        }
     }
 
     if (!pdpt) {
@@ -416,7 +428,7 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
             pd->entries[i] = 0;
         }
 
-        pdpt->entries[pdpt_idx] = pd_phys | PAGE_KERNEL_RW;
+        pdpt->entries[pdpt_idx] = pd_phys | intermediate_flags;
         allocated_pd = 1;
     } else {
         if (pte_huge(pdpt_entry)) {
@@ -426,6 +438,11 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
 
         pd_phys = pte_address(pdpt_entry);
         pd = phys_to_page_table_ptr(pd_phys);
+        
+        /* Update existing intermediate entry flags if needed for user mapping */
+        if (is_user_mapping && !(pdpt_entry & PAGE_USER)) {
+            pdpt->entries[pdpt_idx] = (pdpt_entry & ~0xFFF) | intermediate_flags;
+        }
     }
 
     if (!pd) {
@@ -446,7 +463,7 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
             pt->entries[i] = 0;
         }
 
-        pd->entries[pd_idx] = pt_phys | PAGE_KERNEL_RW;
+        pd->entries[pd_idx] = pt_phys | intermediate_flags;
         allocated_pt = 1;
     } else {
         if (pte_huge(pd_entry)) {
@@ -456,6 +473,11 @@ int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
 
         pt_phys = pte_address(pd_entry);
         pt = phys_to_page_table_ptr(pt_phys);
+        
+        /* Update existing intermediate entry flags if needed for user mapping */
+        if (is_user_mapping && !(pd_entry & PAGE_USER)) {
+            pd->entries[pd_idx] = (pd_entry & ~0xFFF) | intermediate_flags;
+        }
     }
 
     if (!pt) {
