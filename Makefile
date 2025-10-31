@@ -147,7 +147,7 @@ boot: iso-notests
 	fi; \
 	DISPLAY_ARGS="-display none -vga std"; \
 	if [ "$${VIDEO:-0}" != "0" ]; then \
-		DISPLAY_ARGS="-display sdl -vga std"; \
+		DISPLAY_ARGS="-display gtk -vga std"; \
 	fi; \
 	echo "Starting QEMU in interactive mode (Ctrl+C to exit)..."; \
 	qemu-system-x86_64 \
@@ -182,7 +182,7 @@ boot-log: iso-notests
 	fi; \
 	DISPLAY_ARGS="-nographic -vga std"; \
 	if [ "$${VIDEO:-0}" != "0" ]; then \
-		DISPLAY_ARGS="-display sdl -vga std"; \
+		DISPLAY_ARGS="-display gtk -vga std"; \
 	fi; \
 	echo "Starting QEMU with $(BOOT_LOG_TIMEOUT)s timeout (logging to $(LOG_FILE))..."; \
 	set +e; \

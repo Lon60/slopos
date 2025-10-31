@@ -101,7 +101,7 @@ video_sources += files(
 # Lib directory - utility functions
 lib_dir = meson.current_source_dir() / 'lib'
 lib_sources += files(
-  'lib/string.c'
+  'lib/memory.c'
 )
 
 # Drivers directory
