@@ -134,6 +134,7 @@ static void initialize_kernel_subsystems(void) {
     if (test_config.enabled && test_config.suite_mask == 0) {
         kprintln("INTERRUPT_TEST: No suites selected, skipping execution");
         test_config.enabled = 0;
+        test_config.shutdown_on_complete = 0;
     }
 
     if (test_config.enabled) {

@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/constants.h"
+#include "../boot/limine_protocol.h"
 #include "../drivers/serial.h"
 #include "../mm/phys_virt.h"
 
@@ -132,7 +133,7 @@ int framebuffer_init(void) {
         return -1;
     }
 
-    kprint("Framebuffer found at physical address: ");
+    kprint("Framebuffer address from bootloader: ");
     kprint_hex(phys_addr);
     kprintln("");
 
@@ -161,13 +162,38 @@ int framebuffer_init(void) {
 
     /*
      * Translate physical framebuffer address to virtual address.
-     * The framebuffer depends on HHDM (Higher-Half Direct Mapping) or
-     * identity mappings to be accessible. If neither is available, the
-     * framebuffer cannot be initialized.
+     * Limine provides the framebuffer address as a virtual address (via HHDM)
+     * when HHDM is available, so we need to detect this and handle it correctly.
      */
-    uint64_t virtual_addr_uint = mm_phys_to_virt(phys_addr);
+    uint64_t virtual_addr_uint;
+    uint64_t physical_addr_for_storage;
+    
+    /* Check if the address from Limine is already a virtual address (via HHDM) */
+    if (is_hhdm_available()) {
+        uint64_t hhdm_offset = get_hhdm_offset();
+        /* 
+         * Limine provides framebuffer addresses as virtual addresses (via HHDM)
+         * when HHDM is available. If the address is >= HHDM offset, it's already
+         * virtual. Otherwise, treat it as physical and convert it.
+         */
+        if (phys_addr >= hhdm_offset) {
+            /* Address is already virtual via HHDM, use it directly */
+            virtual_addr_uint = phys_addr;
+            /* Calculate physical address for storage */
+            physical_addr_for_storage = phys_addr - hhdm_offset;
+        } else {
+            /* Address appears to be physical, convert it */
+            virtual_addr_uint = mm_phys_to_virt(phys_addr);
+            physical_addr_for_storage = phys_addr;
+        }
+    } else {
+        /* No HHDM, treat as physical and convert */
+        virtual_addr_uint = mm_phys_to_virt(phys_addr);
+        physical_addr_for_storage = phys_addr;
+    }
+    
     if (virtual_addr_uint == 0) {
-        kprint("ERROR: No virtual mapping available for framebuffer at physical address ");
+        kprint("ERROR: No virtual mapping available for framebuffer at address ");
         kprint_hex(phys_addr);
         kprintln("");
         kprintln("Framebuffer requires HHDM (Higher-Half Direct Mapping) or identity mapping");
@@ -180,7 +206,7 @@ int framebuffer_init(void) {
     kprintln("");
 
     /* Initialize framebuffer info */
-    fb_info.physical_addr = phys_addr;
+    fb_info.physical_addr = physical_addr_for_storage;
     fb_info.virtual_addr = virtual_addr;
     fb_info.width = width;
     fb_info.height = height;
