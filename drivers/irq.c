@@ -2,6 +2,7 @@
 #include "serial.h"
 #include "pic.h"
 #include "apic.h"
+#include "keyboard.h"
 #include "../boot/idt.h"
 
 #include <stddef.h>
@@ -118,11 +119,8 @@ static void keyboard_irq_handler(uint8_t irq, struct interrupt_frame *frame, voi
     uint8_t scancode = inb(PS2_DATA_PORT);
     keyboard_event_counter++;
 
-    if (keyboard_event_counter <= 3) {
-        kprint("IRQ: Keyboard scancode ");
-        kprint_hex(scancode);
-        kprintln("");
-    }
+    /* Pass scancode to keyboard driver for processing */
+    keyboard_handle_scancode(scancode);
 }
 
 uint64_t irq_get_timer_ticks(void) {
@@ -141,6 +139,9 @@ void irq_init(void) {
     }
 
     irq_system_initialized = 1;
+
+    /* Initialize keyboard driver */
+    keyboard_init();
 
     irq_register_handler(0, timer_irq_handler, NULL, "timer");
     irq_register_handler(1, keyboard_irq_handler, NULL, "keyboard");
