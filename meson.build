@@ -143,6 +143,7 @@ shell_sources = files(
 fs_dir = meson.current_source_dir() / 'fs'
 fs_sources += files(
   'fs/ramfs.c',
+  'fs/fileio.c',
   'fs/test_ramfs.c'
 )
 
