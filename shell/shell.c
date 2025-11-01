@@ -4,10 +4,12 @@
  */
 
 #include "shell.h"
+#include "builtins.h"
 #include "../drivers/tty.h"
 #include "../drivers/serial.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* ========================================================================
  * HELPER UTILITIES
@@ -103,14 +105,25 @@ void shell_execute_command(const char *line) {
         return;
     }
 
-    /* TODO: Dispatch to real commands (Task 06) */
-    kprint("Command: ");
-    kprint(tokens[0]);
-    kprintln("");
+    const shell_builtin_t *cmd = shell_builtin_lookup(tokens[0]);
+    if (!cmd) {
+        kprint("Unknown command: ");
+        kprintln(tokens[0]);
+        kprintln("Type 'help' to list available commands.");
+        return;
+    }
 
-    for (int i = 1; i < token_count; ++i) {
-        kprint(" Arg: ");
-        kprint(tokens[i]);
+    int result = cmd->handler(token_count, tokens);
+    if (result != 0) {
+        kprint("Command '");
+        kprint(cmd->name);
+        kprint("' returned error code ");
+        if (result < 0) {
+            kprint("-");
+            kprint_decimal((uint64_t)(-result));
+        } else {
+            kprint_decimal((uint64_t)result);
+        }
         kprintln("");
     }
 }

@@ -103,7 +103,8 @@ video_sources += files(
 # Lib directory - utility functions
 lib_dir = meson.current_source_dir() / 'lib'
 lib_sources += files(
-  'lib/memory.c'
+  'lib/memory.c',
+  'lib/string.c'
 )
 
 # Drivers directory
@@ -133,7 +134,8 @@ sched_sources += files(
 # Shell directory
 shell_dir = meson.current_source_dir() / 'shell'
 shell_sources = files(
-  'shell/shell.c'
+  'shell/shell.c',
+  'shell/builtins.c'
 )
 
 # Kernel main sources (root directory)
