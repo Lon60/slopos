@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../boot/debug.h"
+#include "../boot/log.h"
 #include "../drivers/serial.h"
 #include "../mm/paging.h"
 #include "../mm/kernel_heap.h"
@@ -286,11 +287,13 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     task_manager.num_tasks++;
     task_manager.tasks_created++;
 
-    kprint("Created task '");
-    kprint(name);
-    kprint("' with ID ");
-    kprint_decimal(task_id);
-    kprint("\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Created task '");
+        kprint(name);
+        kprint("' with ID ");
+        kprint_decimal(task_id);
+        kprint("\n");
+    });
 
     return task_id;
 }

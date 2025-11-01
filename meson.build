@@ -64,6 +64,7 @@ boot_sources += files(
   'boot/limine_entry.s',
   'boot/idt_handlers.s',
   'boot/early_init.c',
+  'boot/log.c',
   'boot/cpu_verify.c',
   'boot/kernel_panic.c',
   'boot/idt.c',

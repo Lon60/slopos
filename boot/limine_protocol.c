@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include "limine_protocol.h"
 #include "constants.h"
+#include "log.h"
 #include "../drivers/serial.h"
 
 /* ========================================================================
@@ -108,25 +109,27 @@ static struct {
  * Parse all Limine responses and populate system information
  */
 int init_limine_protocol(void) {
-    kprintln("Limine Protocol: Initializing...");
+    boot_log_debug("Limine Protocol: Initializing...");
 
     /* Check base revision */
     if (!LIMINE_BASE_REVISION_SUPPORTED) {
-        kprintln("ERROR: Limine base revision not supported!");
+        boot_log_info("ERROR: Limine base revision not supported!");
         return -1;
     }
-    kprintln("Limine Protocol: Base revision supported");
+    boot_log_debug("Limine Protocol: Base revision supported");
 
     /* Parse bootloader info */
     if (bootloader_info_request.response != NULL) {
         struct limine_bootloader_info_response *bi = 
             (struct limine_bootloader_info_response *)bootloader_info_request.response;
-        
-        kprint("Bootloader: ");
-        if (bi->name) kprint((const char *)bi->name);
-        kprint(" version ");
-        if (bi->version) kprint((const char *)bi->version);
-        kprintln("");
+
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("Bootloader: ");
+            if (bi->name) kprint((const char *)bi->name);
+            kprint(" version ");
+            if (bi->version) kprint((const char *)bi->version);
+            kprintln("");
+        });
     }
 
     /* Parse HHDM (Higher Half Direct Mapping) */
@@ -137,9 +140,11 @@ int init_limine_protocol(void) {
         system_info.hhdm_offset = hhdm->offset;
         system_info.hhdm_available = 1;
         
-        kprint("HHDM offset: ");
-        kprint_hex(hhdm->offset);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("HHDM offset: ");
+            kprint_hex(hhdm->offset);
+            kprintln("");
+        });
     }
 
     /* Parse kernel address */
@@ -150,12 +155,14 @@ int init_limine_protocol(void) {
         system_info.kernel_phys_base = ka->physical_base;
         system_info.kernel_virt_base = ka->virtual_base;
         
-        kprint("Kernel physical base: ");
-        kprint_hex(ka->physical_base);
-        kprintln("");
-        kprint("Kernel virtual base: ");
-        kprint_hex(ka->virtual_base);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("Kernel physical base: ");
+            kprint_hex(ka->physical_base);
+            kprintln("");
+            kprint("Kernel virtual base: ");
+            kprint_hex(ka->virtual_base);
+            kprintln("");
+        });
     }
 
     /* Parse kernel command line */
@@ -175,30 +182,34 @@ int init_limine_protocol(void) {
             system_info.kernel_cmdline_available = 1;
 
             if (index > 0) {
-                kprint("Kernel command line: ");
-                kprintln(system_info.kernel_cmdline);
+                BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+                    kprint("Kernel command line: ");
+                    kprintln(system_info.kernel_cmdline);
+                });
             } else {
-                kprintln("Kernel command line: <empty>");
+                boot_log_debug("Kernel command line: <empty>");
             }
         } else {
-            kprintln("Kernel command line: <not provided>");
+            boot_log_debug("Kernel command line: <not provided>");
         }
     } else {
-        kprintln("Kernel command line request unavailable");
+        boot_log_debug("Kernel command line request unavailable");
     }
 
     /* Parse memory map */
     if (memmap_request.response != NULL) {
         struct limine_memmap_response *memmap = 
             (struct limine_memmap_response *)memmap_request.response;
-        
+
         uint64_t total = 0;
         uint64_t available = 0;
-        
-        kprint("Memory map: ");
-        kprint_decimal(memmap->entry_count);
-        kprintln(" entries");
-        
+
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("Memory map: ");
+            kprint_decimal(memmap->entry_count);
+            kprintln(" entries");
+        });
+
         for (uint64_t i = 0; i < memmap->entry_count; i++) {
             struct limine_memmap_entry *entry = 
                 (struct limine_memmap_entry *)memmap->entries[i];
@@ -214,21 +225,23 @@ int init_limine_protocol(void) {
         system_info.available_memory = available;
         system_info.memory_map_available = 1;
         
-        kprint("Total memory: ");
-        kprint_decimal(total / (1024 * 1024));
-        kprintln(" MB");
-        kprint("Available memory: ");
-        kprint_decimal(available / (1024 * 1024));
-        kprintln(" MB");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("Total memory: ");
+            kprint_decimal(total / (1024 * 1024));
+            kprintln(" MB");
+            kprint("Available memory: ");
+            kprint_decimal(available / (1024 * 1024));
+            kprintln(" MB");
+        });
     } else {
-        kprintln("WARNING: No memory map available from Limine");
+        boot_log_info("WARNING: No memory map available from Limine");
     }
 
     /* Parse framebuffer */
     if (framebuffer_request.response != NULL) {
         struct limine_framebuffer_response *fb_resp = 
             (struct limine_framebuffer_response *)framebuffer_request.response;
-        
+
         if (fb_resp->framebuffer_count > 0) {
             struct limine_framebuffer *fb = 
                 (struct limine_framebuffer *)fb_resp->framebuffers[0];
@@ -240,29 +253,31 @@ int init_limine_protocol(void) {
             system_info.framebuffer_bpp = (uint8_t)fb->bpp;
             system_info.framebuffer_available = 1;
             
-            kprint("Framebuffer: ");
-            kprint_decimal(fb->width);
-            kprint("x");
-            kprint_decimal(fb->height);
-            kprint(" @ ");
-            kprint_decimal(fb->bpp);
-            kprintln(" bpp");
-            kprint("Framebuffer address: ");
-            kprint_hex((uint64_t)fb->address);
-            kprintln("");
-            kprint("Framebuffer pitch: ");
-            kprint_decimal(fb->pitch);
-            kprintln(" bytes");
+            BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+                kprint("Framebuffer: ");
+                kprint_decimal(fb->width);
+                kprint("x");
+                kprint_decimal(fb->height);
+                kprint(" @ ");
+                kprint_decimal(fb->bpp);
+                kprintln(" bpp");
+                kprint("Framebuffer address: ");
+                kprint_hex((uint64_t)fb->address);
+                kprintln("");
+                kprint("Framebuffer pitch: ");
+                kprint_decimal(fb->pitch);
+                kprintln(" bytes");
+            });
         } else {
-            kprintln("WARNING: No framebuffer provided by Limine");
+            boot_log_info("WARNING: No framebuffer provided by Limine");
             return -1;
         }
     } else {
-        kprintln("ERROR: No framebuffer response from Limine");
+        boot_log_info("ERROR: No framebuffer response from Limine");
         return -1;
     }
 
-    kprintln("Limine Protocol: Initialization complete");
+    boot_log_debug("Limine Protocol: Initialization complete");
     return 0;
 }
 

@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/log.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
@@ -513,7 +514,7 @@ int destroy_process_vma_space(uint32_t process_id) {
  * Initialize virtual memory region manager
  */
 int init_vmem_regions(void) {
-    kprint("Initializing virtual memory region manager\n");
+    boot_log_debug("Initializing virtual memory region manager");
 
     vma_manager.vma_pool_index = 0;
     vma_manager.num_processes = 0;
@@ -534,7 +535,7 @@ int init_vmem_regions(void) {
         vma_manager.process_spaces[i].num_vmas = 0;
     }
 
-    kprint("Virtual memory region manager initialized\n");
+    boot_log_debug("Virtual memory region manager initialized");
     return 0;
 }
 

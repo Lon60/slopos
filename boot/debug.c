@@ -4,6 +4,7 @@
  */
 
 #include "debug.h"
+#include "log.h"
 #include "../drivers/serial.h"
 #include "../drivers/irq.h"
 #include "idt.h"
@@ -40,7 +41,7 @@ static inline uint64_t debug_read_tsc(void) {
  * Initialize debug subsystem
  */
 void debug_init(void) {
-    kprintln("DEBUG: Initializing debug subsystem");
+    boot_log_debug("DEBUG: Initializing debug subsystem");
 
     debug_ctx.boot_timestamp = debug_get_timestamp();
     debug_ctx.initialized = 1;
@@ -49,7 +50,7 @@ void debug_init(void) {
     debug_register_memory_region(0xFFFFFFFF80000000ULL, 0xFFFFFFFF80400000ULL, 0, "Kernel Code");
     debug_register_memory_region(0x0000000000000000ULL, 0x0000000000100000ULL, 0, "Low Memory");
 
-    kprintln("DEBUG: Debug subsystem initialized");
+    boot_log_debug("DEBUG: Debug subsystem initialized");
 }
 
 /*

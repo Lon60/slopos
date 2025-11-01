@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include "serial.h"
 #include "../boot/constants.h"
+#include "../boot/log.h"
 
 /* ========================================================================
  * PIC CONSTANTS AND DEFINITIONS
@@ -67,17 +68,19 @@ static inline void io_wait(void) {
  * Remaps IRQs to avoid conflicts with CPU exceptions
  */
 void init_pic(void) {
-    kprintln("Initializing Programmable Interrupt Controller (PIC)...");
+    boot_log_debug("Initializing Programmable Interrupt Controller (PIC)...");
 
     /* Save current interrupt masks */
     uint8_t mask1 = inb(PIC1_DATA);
     uint8_t mask2 = inb(PIC2_DATA);
 
-    kprint("Current PIC masks: Master=");
-    kprint_hex(mask1);
-    kprint(" Slave=");
-    kprint_hex(mask2);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Current PIC masks: Master=");
+        kprint_hex(mask1);
+        kprint(" Slave=");
+        kprint_hex(mask2);
+        kprintln("");
+    });
 
     /* Start initialization sequence */
     outb(PIC1_COMMAND, PIC_INIT);   /* Initialize master PIC */
@@ -109,31 +112,33 @@ void init_pic(void) {
     outb(PIC2_DATA, PIC_DISABLE_ALL);
     io_wait();
 
-    kprintln("PIC initialization complete");
-    kprint("IRQ remapping: IRQ 0-7 -> vectors ");
-    kprint_hex(IRQ0_VECTOR);
-    kprint("-");
-    kprint_hex(IRQ0_VECTOR + 7);
-    kprintln("");
-    kprint("IRQ remapping: IRQ 8-15 -> vectors ");
-    kprint_hex(IRQ8_VECTOR);
-    kprint("-");
-    kprint_hex(IRQ8_VECTOR + 7);
-    kprintln("");
-    kprintln("All IRQs disabled for safety");
+    boot_log_debug("PIC initialization complete");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("IRQ remapping: IRQ 0-7 -> vectors ");
+        kprint_hex(IRQ0_VECTOR);
+        kprint("-");
+        kprint_hex(IRQ0_VECTOR + 7);
+        kprintln("");
+        kprint("IRQ remapping: IRQ 8-15 -> vectors ");
+        kprint_hex(IRQ8_VECTOR);
+        kprint("-");
+        kprint_hex(IRQ8_VECTOR + 7);
+        kprintln("");
+        kprintln("All IRQs disabled for safety");
+    });
 }
 
 /*
  * Disable PIC entirely (for APIC systems)
  */
 void disable_pic(void) {
-    kprintln("Disabling legacy PIC...");
+    boot_log_debug("Disabling legacy PIC...");
 
     /* Mask all interrupts on both PICs */
     outb(PIC1_DATA, PIC_DISABLE_ALL);
     outb(PIC2_DATA, PIC_DISABLE_ALL);
 
-    kprintln("Legacy PIC disabled");
+    boot_log_debug("Legacy PIC disabled");
 }
 
 /* ========================================================================
@@ -172,9 +177,11 @@ void pic_enable_irq(uint8_t irq) {
     value = inb(port) & ~(1 << irq);
     outb(port, value);
 
-    kprint("Enabled IRQ ");
-    kprint_hex(irq);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Enabled IRQ ");
+        kprint_hex(irq);
+        kprintln("");
+    });
 }
 
 /*
@@ -221,9 +228,11 @@ uint8_t pic_get_slave_mask(void) {
  */
 void pic_set_master_mask(uint8_t mask) {
     outb(PIC1_DATA, mask);
-    kprint("Set master PIC mask to ");
-    kprint_hex(mask);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Set master PIC mask to ");
+        kprint_hex(mask);
+        kprintln("");
+    });
 }
 
 /*
@@ -231,9 +240,11 @@ void pic_set_master_mask(uint8_t mask) {
  */
 void pic_set_slave_mask(uint8_t mask) {
     outb(PIC2_DATA, mask);
-    kprint("Set slave PIC mask to ");
-    kprint_hex(mask);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Set slave PIC mask to ");
+        kprint_hex(mask);
+        kprintln("");
+    });
 }
 
 /* ========================================================================
@@ -337,7 +348,7 @@ int pic_self_test(void) {
     pic_set_master_mask(orig_mask1);
     pic_set_slave_mask(orig_mask2);
 
-    kprintln("PIC self-test passed");
+    boot_log_debug("PIC self-test passed");
     return 0;
 }
 
@@ -380,7 +391,7 @@ uint8_t pic_vector_to_irq(uint8_t vector) {
  * Enable all safe IRQs for testing (timer and keyboard)
  */
 void pic_enable_safe_irqs(void) {
-    kprintln("Enabling safe IRQs for testing...");
+    boot_log_debug("Enabling safe IRQs for testing...");
 
     /* Enable only timer (IRQ 0) and keyboard (IRQ 1) for now */
     uint8_t master_mask = 0xFC;  /* Enable IRQ 0 and 1 only (bits 0,1 = 0) */
@@ -389,7 +400,7 @@ void pic_enable_safe_irqs(void) {
     pic_set_master_mask(master_mask);
     pic_set_slave_mask(slave_mask);
 
-    kprintln("Safe IRQs enabled: Timer (IRQ 0), Keyboard (IRQ 1)");
+    boot_log_debug("Safe IRQs enabled: Timer (IRQ 0), Keyboard (IRQ 1)");
 }
 
 /*

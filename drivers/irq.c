@@ -4,6 +4,7 @@
 #include "apic.h"
 #include "keyboard.h"
 #include "../boot/idt.h"
+#include "../boot/log.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -73,9 +74,11 @@ static void unmask_irq_line(uint8_t irq) {
 
 static void log_unhandled_irq(uint8_t irq, uint8_t vector) {
     if (irq >= IRQ_LINES) {
-        kprint("IRQ: Spurious vector ");
-        kprint_dec(vector);
-        kprintln(" received");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("IRQ: Spurious vector ");
+            kprint_dec(vector);
+            kprintln(" received");
+        });
         return;
     }
 
@@ -85,11 +88,13 @@ static void log_unhandled_irq(uint8_t irq, uint8_t vector) {
 
     irq_table[irq].reported_unhandled = 1;
 
-    kprint("IRQ: Unhandled IRQ ");
-    kprint_dec(irq);
-    kprint(" (vector ");
-    kprint_dec(vector);
-    kprintln(") - masking line");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+        kprint("IRQ: Unhandled IRQ ");
+        kprint_dec(irq);
+        kprint(" (vector ");
+        kprint_dec(vector);
+        kprintln(") - masking line");
+    });
 }
 
 static void timer_irq_handler(uint8_t irq, struct interrupt_frame *frame, void *context) {
@@ -100,9 +105,11 @@ static void timer_irq_handler(uint8_t irq, struct interrupt_frame *frame, void *
     timer_tick_counter++;
 
     if (timer_tick_counter <= 3) {
-        kprint("IRQ: Timer tick #");
-        kprint_dec(timer_tick_counter);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("IRQ: Timer tick #");
+            kprint_dec(timer_tick_counter);
+            kprintln("");
+        });
     }
 }
 
@@ -151,12 +158,12 @@ void irq_init(void) {
 
 int irq_register_handler(uint8_t irq, irq_handler_t handler, void *context, const char *name) {
     if (irq >= IRQ_LINES) {
-        kprintln("IRQ: Attempted to register handler for invalid line");
+        boot_log_info("IRQ: Attempted to register handler for invalid line");
         return -1;
     }
 
     if (handler == NULL) {
-        kprintln("IRQ: Attempted to register NULL handler");
+        boot_log_info("IRQ: Attempted to register NULL handler");
         return -1;
     }
 
@@ -165,14 +172,16 @@ int irq_register_handler(uint8_t irq, irq_handler_t handler, void *context, cons
     irq_table[irq].name = name;
     irq_table[irq].reported_unhandled = 0;
 
-    kprint("IRQ: Registered handler for line ");
-    kprint_dec(irq);
-    if (name != NULL) {
-        kprint(" (");
-        kprint(name);
-        kprint(")");
-    }
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("IRQ: Registered handler for line ");
+        kprint_dec(irq);
+        if (name != NULL) {
+            kprint(" (");
+            kprint(name);
+            kprint(")");
+        }
+        kprintln("");
+    });
 
     unmask_irq_line(irq);
     return 0;
@@ -189,9 +198,11 @@ void irq_unregister_handler(uint8_t irq) {
     irq_table[irq].reported_unhandled = 0;
     mask_irq_line(irq);
 
-    kprint("IRQ: Unregistered handler for line ");
-    kprint_dec(irq);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("IRQ: Unregistered handler for line ");
+        kprint_dec(irq);
+        kprintln("");
+    });
 }
 
 void irq_enable_line(uint8_t irq) {
@@ -213,14 +224,14 @@ void irq_disable_line(uint8_t irq) {
 
 void irq_dispatch(struct interrupt_frame *frame) {
     if (!frame) {
-        kprintln("IRQ: Received null frame");
+        boot_log_info("IRQ: Received null frame");
         return;
     }
 
     uint8_t vector = (uint8_t)(frame->vector & 0xFF);
 
     if (!irq_system_initialized) {
-        kprintln("IRQ: Dispatch received before initialization");
+        boot_log_info("IRQ: Dispatch received before initialization");
         if (vector >= IRQ_BASE_VECTOR) {
             uint8_t temp_irq = vector - IRQ_BASE_VECTOR;
             acknowledge_irq(temp_irq);
@@ -229,9 +240,11 @@ void irq_dispatch(struct interrupt_frame *frame) {
     }
 
     if (vector < IRQ_BASE_VECTOR) {
-        kprint("IRQ: Received non-IRQ vector ");
-        kprint_dec(vector);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("IRQ: Received non-IRQ vector ");
+            kprint_dec(vector);
+            kprintln("");
+        });
         return;
     }
 

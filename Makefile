@@ -12,7 +12,7 @@ LOG_FILE ?= test_output.log
 
 BOOT_LOG_TIMEOUT ?= 15
 BOOT_CMDLINE ?= itests=off
-TEST_CMDLINE ?= itests=on itests.shutdown=on itests.verbosity=summary
+TEST_CMDLINE ?= itests=on itests.shutdown=on itests.verbosity=summary boot.debug=on
 VIDEO ?= 0
 
 LIMINE_DIR := third_party/limine

@@ -6,6 +6,7 @@
 #include "../lib/string.h"
 #include "../lib/memory.h"
 #include "../drivers/serial.h"
+#include "../boot/log.h"
 
 typedef enum {
     RAMFS_CREATE_NONE = 0,
@@ -266,7 +267,7 @@ int ramfs_init(void) {
     ramfs_create_file("/etc/readme.txt", sample_text, sizeof(sample_text) - 1);
     ramfs_create_directory("/tmp");
 
-    kprintln("RamFS initialized");
+    boot_log_debug("RamFS initialized");
     return 0;
 }
 

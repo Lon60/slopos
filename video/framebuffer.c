@@ -15,6 +15,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../boot/limine_protocol.h"
+#include "../boot/log.h"
 #include "../drivers/serial.h"
 #include "../mm/phys_virt.h"
 
@@ -125,38 +126,40 @@ int framebuffer_init(void) {
     uint32_t width, height, pitch;
     uint8_t bpp;
 
-    kprintln("Initializing framebuffer...");
+    boot_log_debug("Initializing framebuffer...");
 
     /* Get framebuffer info from Multiboot2 */
     if (!get_framebuffer_info(&phys_addr, &width, &height, &pitch, &bpp)) {
-        kprintln("ERROR: No framebuffer available from bootloader");
+        boot_log_info("ERROR: No framebuffer available from bootloader");
         return -1;
     }
 
-    kprint("Framebuffer address from bootloader: ");
-    kprint_hex(phys_addr);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Framebuffer address from bootloader: ");
+        kprint_hex(phys_addr);
+        kprintln("");
+    });
 
     /* Validate parameters */
     if (phys_addr == 0) {
-        kprintln("ERROR: Invalid framebuffer address");
+        boot_log_info("ERROR: Invalid framebuffer address");
         return -1;
     }
 
     if (!validate_dimensions(width, height)) {
-        kprintln("ERROR: Invalid framebuffer dimensions");
+        boot_log_info("ERROR: Invalid framebuffer dimensions");
         return -1;
     }
 
     if (bpp != 16 && bpp != 24 && bpp != 32) {
-        kprintln("ERROR: Unsupported color depth");
+        boot_log_info("ERROR: Unsupported color depth");
         return -1;
     }
 
     /* Calculate buffer size */
     uint32_t buffer_size = pitch * height;
     if (buffer_size == 0 || buffer_size > 64 * 1024 * 1024) {  /* Max 64MB */
-        kprintln("ERROR: Invalid framebuffer size");
+        boot_log_info("ERROR: Invalid framebuffer size");
         return -1;
     }
 
@@ -193,17 +196,21 @@ int framebuffer_init(void) {
     }
     
     if (virtual_addr_uint == 0) {
-        kprint("ERROR: No virtual mapping available for framebuffer at address ");
-        kprint_hex(phys_addr);
-        kprintln("");
-        kprintln("Framebuffer requires HHDM (Higher-Half Direct Mapping) or identity mapping");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("ERROR: No virtual mapping available for framebuffer at address ");
+            kprint_hex(phys_addr);
+            kprintln("");
+            kprintln("Framebuffer requires HHDM (Higher-Half Direct Mapping) or identity mapping");
+        });
         return -1;
     }
     void *virtual_addr = (void*)virtual_addr_uint;
 
-    kprint("Framebuffer virtual address: ");
-    kprint_hex(virtual_addr_uint);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Framebuffer virtual address: ");
+        kprint_hex(virtual_addr_uint);
+        kprintln("");
+    });
 
     /* Initialize framebuffer info */
     fb_info.physical_addr = physical_addr_for_storage;
@@ -216,13 +223,15 @@ int framebuffer_init(void) {
     fb_info.buffer_size = buffer_size;
     fb_info.initialized = 1;
 
-    kprint("Framebuffer initialized: ");
-    kprint_decimal(width);
-    kprint("x");
-    kprint_decimal(height);
-    kprint(" @ ");
-    kprint_decimal(bpp);
-    kprintln(" bpp");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Framebuffer initialized: ");
+        kprint_decimal(width);
+        kprint("x");
+        kprint_decimal(height);
+        kprint(" @ ");
+        kprint_decimal(bpp);
+        kprintln(" bpp");
+    });
 
     return 0;
 }

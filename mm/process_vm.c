@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/log.h"
 #include "../boot/integration.h"
 #include "kernel_heap.h"
 #include "paging.h"
@@ -589,7 +590,7 @@ int process_vm_free(uint32_t process_id, uint64_t vaddr, uint64_t size) {
  * Initialize the process virtual memory manager
  */
 int init_process_vm(void) {
-    kprint("Initializing process virtual memory manager\n");
+    boot_log_debug("Initializing process virtual memory manager");
 
     vm_manager.num_processes = 0;
     vm_manager.next_process_id = 1;  /* Start from 1, 0 is kernel */
@@ -606,7 +607,7 @@ int init_process_vm(void) {
         vm_manager.processes[i].next = NULL;
     }
 
-    kprint("Process VM manager initialized\n");
+    boot_log_debug("Process VM manager initialized");
     return 0;
 }
 

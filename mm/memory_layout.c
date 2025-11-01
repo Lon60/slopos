@@ -9,6 +9,7 @@
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
 #include "../boot/limine_protocol.h"
+#include "../boot/log.h"
 #include "memory_layout.h"
 
 /* ========================================================================
@@ -98,7 +99,7 @@ void init_kernel_memory_layout(void) {
 
     layout_initialized = 1;
 
-    kprintln("SlopOS: Kernel memory layout initialized");
+    boot_log_debug("SlopOS: Kernel memory layout initialized");
 }
 
 /*
@@ -157,7 +158,7 @@ void setup_kernel_memory_regions(void) {
                      EARLY_PD_PHYS_ADDR + PAGE_SIZE_4KB,
                      MEMORY_REGION_PAGE_TABLES, 0, "Early Page Tables");
 
-    kprintln("SlopOS: Standard kernel memory regions configured");
+    boot_log_debug("SlopOS: Standard kernel memory regions configured");
 }
 
 /* ========================================================================

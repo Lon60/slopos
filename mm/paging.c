@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../drivers/serial.h"
+#include "../boot/log.h"
 #include "paging.h"
 #include "../boot/limine_protocol.h"
 #include "phys_virt.h"
@@ -598,7 +599,7 @@ int switch_page_directory(process_page_dir_t *page_dir) {
     set_cr3(page_dir->pml4_phys);
     current_page_dir = page_dir;
 
-    kprint("Switched to process page directory\n");
+    boot_log_debug("Switched to process page directory");
     return 0;
 }
 
@@ -618,7 +619,7 @@ process_page_dir_t *get_current_page_directory(void) {
  * Sets up process-centric paging infrastructure
  */
 void init_paging(void) {
-    kprint("Initializing paging system\n");
+    boot_log_debug("Initializing paging system");
 
     /* Get current CR3 value set by bootloader */
     uint64_t cr3 = get_cr3();
@@ -637,19 +638,21 @@ void init_paging(void) {
         kernel_panic("Higher-half kernel mapping not found");
     }
 
-    kprint("Higher-half kernel mapping verified at ");
-    kprint_hex(kernel_phys);
-    kprint("\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Higher-half kernel mapping verified at ");
+        kprint_hex(kernel_phys);
+        kprint("\n");
+    });
 
     /* Verify identity mapping exists for early boot hardware access */
     uint64_t identity_phys = virt_to_phys(0x100000); /* 1MB mark */
     if (identity_phys == 0x100000 || is_hhdm_available()) {
-        kprint("Identity mapping verified\n");
+        boot_log_debug("Identity mapping verified");
     } else {
-        kprint("Identity mapping not found (may be normal after early boot)\n");
+        boot_log_debug("Identity mapping not found (may be normal after early boot)");
     }
 
-    kprint("Paging system initialized successfully\n");
+    boot_log_debug("Paging system initialized successfully");
 }
 
 /* ========================================================================

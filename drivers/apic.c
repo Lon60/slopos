@@ -5,6 +5,7 @@
 
 #include "apic.h"
 #include "serial.h"
+#include "../boot/log.h"
 
 // Limine boot protocol exports
 extern uint64_t get_hhdm_offset(void);
@@ -50,7 +51,7 @@ void cpuid(uint32_t leaf, uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t 
 int apic_detect(void) {
     uint32_t eax, ebx, ecx, edx;
 
-    kprintln("APIC: Detecting Local APIC availability");
+    boot_log_debug("APIC: Detecting Local APIC availability");
 
     // Check CPUID leaf 1 for APIC support
     cpuid(1, &eax, &ebx, &ecx, &edx);
@@ -58,46 +59,52 @@ int apic_detect(void) {
     // Check for Local APIC in EDX bit 9
     if (edx & CPUID_FEAT_EDX_APIC) {
         apic_available = 1;
-        kprintln("APIC: Local APIC is available");
+        boot_log_debug("APIC: Local APIC is available");
 
         // Check for x2APIC in ECX bit 21
         if (ecx & CPUID_FEAT_ECX_X2APIC) {
             x2apic_available = 1;
-            kprintln("APIC: x2APIC mode is available");
+            boot_log_debug("APIC: x2APIC mode is available");
         } else {
-            kprintln("APIC: x2APIC mode is not available");
+            boot_log_debug("APIC: x2APIC mode is not available");
         }
 
         // Get APIC base address from MSR
         uint64_t apic_base_msr = read_msr(MSR_APIC_BASE);
         apic_base_physical = apic_base_msr & APIC_BASE_ADDR_MASK;
 
-        kprint("APIC: Physical base: ");
-        kprint_hex(apic_base_physical);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("APIC: Physical base: ");
+            kprint_hex(apic_base_physical);
+            kprintln("");
+        });
 
         if (is_hhdm_available()) {
             uint64_t hhdm_offset = get_hhdm_offset();
             apic_base_address = apic_base_physical + hhdm_offset;
 
-            kprint("APIC: Virtual base (HHDM): ");
-            kprint_hex(apic_base_address);
-            kprintln("");
+            BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+                kprint("APIC: Virtual base (HHDM): ");
+                kprint_hex(apic_base_address);
+                kprintln("");
+            });
         } else {
-            kprintln("APIC: ERROR - HHDM not available, cannot map APIC registers");
+            boot_log_info("APIC: ERROR - HHDM not available, cannot map APIC registers");
             apic_available = 0;
             return 0;
         }
 
-        kprint("APIC: MSR flags: ");
-        if (apic_base_msr & APIC_BASE_BSP) kprint("BSP ");
-        if (apic_base_msr & APIC_BASE_X2APIC) kprint("X2APIC ");
-        if (apic_base_msr & APIC_BASE_GLOBAL_ENABLE) kprint("ENABLED ");
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("APIC: MSR flags: ");
+            if (apic_base_msr & APIC_BASE_BSP) kprint("BSP ");
+            if (apic_base_msr & APIC_BASE_X2APIC) kprint("X2APIC ");
+            if (apic_base_msr & APIC_BASE_GLOBAL_ENABLE) kprint("ENABLED ");
+            kprintln("");
+        });
 
         return 1;
     } else {
-        kprintln("APIC: Local APIC is not available");
+        boot_log_debug("APIC: Local APIC is not available");
         return 0;
     }
 }
@@ -111,14 +118,14 @@ int apic_init(void) {
         return -1;
     }
 
-    kprintln("APIC: Initializing Local APIC");
+    boot_log_debug("APIC: Initializing Local APIC");
 
     // Enable APIC globally in MSR if not already enabled
     uint64_t apic_base_msr = read_msr(MSR_APIC_BASE);
     if (!(apic_base_msr & APIC_BASE_GLOBAL_ENABLE)) {
         apic_base_msr |= APIC_BASE_GLOBAL_ENABLE;
         write_msr(MSR_APIC_BASE, apic_base_msr);
-        kprintln("APIC: Enabled APIC globally via MSR");
+        boot_log_debug("APIC: Enabled APIC globally via MSR");
     }
 
     // Enable APIC via spurious vector register
@@ -141,14 +148,16 @@ int apic_init(void) {
     uint32_t apic_id = apic_get_id();
     uint32_t apic_version = apic_get_version();
 
-    kprint("APIC: ID: ");
-    kprint_hex(apic_id);
-    kprint(", Version: ");
-    kprint_hex(apic_version);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("APIC: ID: ");
+        kprint_hex(apic_id);
+        kprint(", Version: ");
+        kprint_hex(apic_version);
+        kprintln("");
+    });
 
     apic_enabled = 1;
-    kprintln("APIC: Initialization complete");
+    boot_log_debug("APIC: Initialization complete");
 
     return 0;
 }
@@ -193,7 +202,7 @@ void apic_enable(void) {
     apic_write_register(LAPIC_SPURIOUS, spurious);
 
     apic_enabled = 1;
-    kprintln("APIC: Local APIC enabled");
+    boot_log_debug("APIC: Local APIC enabled");
 }
 
 /*
@@ -208,7 +217,7 @@ void apic_disable(void) {
     apic_write_register(LAPIC_SPURIOUS, spurious);
 
     apic_enabled = 0;
-    kprintln("APIC: Local APIC disabled");
+    boot_log_debug("APIC: Local APIC disabled");
 }
 
 /*
@@ -242,11 +251,13 @@ uint32_t apic_get_version(void) {
 void apic_timer_init(uint32_t vector, uint32_t frequency) {
     if (!apic_enabled) return;
 
-    kprint("APIC: Initializing timer with vector ");
-    kprint_hex(vector);
-    kprint(" and frequency ");
-    kprint_dec(frequency);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("APIC: Initializing timer with vector ");
+        kprint_hex(vector);
+        kprint(" and frequency ");
+        kprint_dec(frequency);
+        kprintln("");
+    });
 
     // Set timer divisor to 16
     apic_timer_set_divisor(LAPIC_TIMER_DIV_16);
@@ -260,7 +271,7 @@ void apic_timer_init(uint32_t vector, uint32_t frequency) {
     uint32_t initial_count = 1000000 / frequency;  // Approximate
     apic_timer_start(initial_count);
 
-    kprintln("APIC: Timer initialized");
+    boot_log_debug("APIC: Timer initialized");
 }
 
 /*

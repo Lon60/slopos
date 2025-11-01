@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/log.h"
 #include "kernel_heap.h"
 
 /* Forward declarations */
@@ -343,9 +344,11 @@ static int expand_heap(uint32_t min_size) {
         pages_needed = 4;
     }
 
-    kprint("Expanding heap by ");
-    kprint_decimal(pages_needed);
-    kprint(" pages\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Expanding heap by ");
+        kprint_decimal(pages_needed);
+        kprint(" pages\n");
+    });
 
     uint64_t expansion_start = kernel_heap.current_break;
     uint32_t total_bytes = pages_needed * PAGE_SIZE_4KB;
@@ -355,14 +358,14 @@ static int expand_heap(uint32_t min_size) {
     for (uint32_t i = 0; i < pages_needed; i++) {
         uint64_t phys_page = alloc_page_frame(0);
         if (!phys_page) {
-            kprint("expand_heap: Failed to allocate physical page\n");
+            boot_log_info("expand_heap: Failed to allocate physical page");
             goto rollback;
         }
 
         uint64_t virt_page = expansion_start + (uint64_t)i * PAGE_SIZE_4KB;
 
         if (map_page_4kb(virt_page, phys_page, PAGE_KERNEL_RW) != 0) {
-            kprint("expand_heap: Failed to map heap page\n");
+            boot_log_info("expand_heap: Failed to map heap page");
             free_page_frame(phys_page);
             goto rollback;
         }
@@ -638,7 +641,7 @@ void kfree(void *ptr) {
  * Sets up initial heap area and free lists
  */
 int init_kernel_heap(void) {
-    kprint("Initializing kernel heap\n");
+    boot_log_debug("Initializing kernel heap");
 
     kernel_heap.start_addr = KERNEL_HEAP_START;
     kernel_heap.end_addr = KERNEL_HEAP_START + KERNEL_HEAP_SIZE;
@@ -668,9 +671,11 @@ int init_kernel_heap(void) {
 
     kernel_heap.initialized = 1;
 
-    kprint("Kernel heap initialized at ");
-    kprint_hex(KERNEL_HEAP_START);
-    kprint("\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Kernel heap initialized at ");
+        kprint_hex(KERNEL_HEAP_START);
+        kprint("\n");
+    });
 
     return 0;
 }

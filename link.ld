@@ -37,6 +37,36 @@ SECTIONS
     *(.rodata .rodata.*)
   } :rodata
 
+  .boot_init_early_hw ALIGN(8) : {
+    __start_boot_init_early_hw = .;
+    KEEP(*(.boot_init_early_hw))
+    __stop_boot_init_early_hw = .;
+  } :rodata
+
+  .boot_init_memory ALIGN(8) : {
+    __start_boot_init_memory = .;
+    KEEP(*(.boot_init_memory))
+    __stop_boot_init_memory = .;
+  } :rodata
+
+  .boot_init_drivers ALIGN(8) : {
+    __start_boot_init_drivers = .;
+    KEEP(*(.boot_init_drivers))
+    __stop_boot_init_drivers = .;
+  } :rodata
+
+  .boot_init_services ALIGN(8) : {
+    __start_boot_init_services = .;
+    KEEP(*(.boot_init_services))
+    __stop_boot_init_services = .;
+  } :rodata
+
+  .boot_init_optional ALIGN(8) : {
+    __start_boot_init_optional = .;
+    KEEP(*(.boot_init_optional))
+    __stop_boot_init_optional = .;
+  } :rodata
+
   .data ALIGN(4096) : {
     *(.data .data.*)
   } :data
@@ -72,4 +102,3 @@ SECTIONS
     *(.gnu*)
   }
 }
-
