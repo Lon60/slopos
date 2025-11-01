@@ -23,6 +23,37 @@ static inline int is_control_char(char c) {
     return (c >= 0x00 && c <= 0x1F) || c == 0x7F;
 }
 
+/*
+ * Attempt to fetch a character from any interactive input source.
+ * Prefers PS/2 keyboard scancodes but falls back to the serial console
+ * when running without a graphical window.
+ */
+static int tty_poll_input_char(char *out_char) {
+    if (!out_char) {
+        return 0;
+    }
+
+    if (keyboard_has_input()) {
+        *out_char = keyboard_getchar();
+        return 1;
+    }
+
+    if (serial_data_available(SERIAL_COM1_PORT)) {
+        char c = serial_getc(SERIAL_COM1_PORT);
+
+        if (c == '\r') {
+            c = '\n';
+        } else if (c == 0x7F) {
+            c = '\b';
+        }
+
+        *out_char = c;
+        return 1;
+    }
+
+    return 0;
+}
+
 /* ========================================================================
  * TTY READLINE IMPLEMENTATION
  * ======================================================================== */
@@ -43,12 +74,11 @@ size_t tty_read_line(char *buffer, size_t buffer_size) {
     
     /* Read characters until Enter is pressed */
     while (1) {
-        /* Block until character is available */
-        while (!keyboard_has_input()) {
+        /* Block until character is available from keyboard or serial */
+        char c = 0;
+        while (!tty_poll_input_char(&c)) {
             /* Busy wait - could be enhanced with task scheduling later */
         }
-        
-        char c = keyboard_getchar();
         
         /* Handle Enter key - finish line input */
         if (c == '\n' || c == '\r') {
@@ -98,4 +128,3 @@ size_t tty_read_line(char *buffer, size_t buffer_size) {
         }
     }
 }
-
