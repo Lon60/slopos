@@ -27,6 +27,55 @@ static void ramfs_link_child(ramfs_node_t *parent, ramfs_node_t *child) {
     parent->children = child;
 }
 
+static void ramfs_detach_node(ramfs_node_t *node) {
+    if (!node || !node->parent) {
+        return;
+    }
+
+    ramfs_node_t *parent = node->parent;
+
+    if (parent->children == node) {
+        parent->children = node->next_sibling;
+    }
+
+    if (node->prev_sibling) {
+        node->prev_sibling->next_sibling = node->next_sibling;
+    }
+
+    if (node->next_sibling) {
+        node->next_sibling->prev_sibling = node->prev_sibling;
+    }
+
+    node->parent = NULL;
+    node->prev_sibling = NULL;
+    node->next_sibling = NULL;
+}
+
+static void ramfs_free_node_recursive(ramfs_node_t *node) {
+    if (!node) {
+        return;
+    }
+
+    ramfs_node_t *child = node->children;
+    while (child) {
+        ramfs_node_t *next = child->next_sibling;
+        ramfs_free_node_recursive(child);
+        child = next;
+    }
+
+    if (node->data) {
+        kfree(node->data);
+        node->data = NULL;
+    }
+
+    if (node->name) {
+        kfree(node->name);
+        node->name = NULL;
+    }
+
+    kfree(node);
+}
+
 static ramfs_node_t *ramfs_allocate_node(const char *name, size_t name_len, int type, ramfs_node_t *parent) {
     ramfs_node_t *node = kmalloc(sizeof(ramfs_node_t));
     if (!node) {
@@ -418,5 +467,21 @@ int ramfs_list_directory(const char *path, ramfs_node_t ***entries, int *count) 
 
     *entries = array;
     *count = child_count;
+    return 0;
+}
+
+int ramfs_remove_file(const char *path) {
+    if (!ramfs_validate_path(path) || !ramfs_root) {
+        return -1;
+    }
+
+    ramfs_node_t *node = ramfs_find_node(path);
+    if (!node || node->type != RAMFS_TYPE_FILE || !node->parent) {
+        return -1;
+    }
+
+    ramfs_detach_node(node);
+    node->children = NULL;
+    ramfs_free_node_recursive(node);
     return 0;
 }

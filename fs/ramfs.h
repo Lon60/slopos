@@ -26,5 +26,6 @@ int ramfs_read_file(const char *path, void *buffer, size_t buffer_size, size_t *
 int ramfs_write_file(const char *path, const void *data, size_t size);
 /* Caller must kfree(*entries) when count > 0. */
 int ramfs_list_directory(const char *path, ramfs_node_t ***entries, int *count);
+int ramfs_remove_file(const char *path);
 
 #endif /* FS_RAMFS_H */

@@ -45,5 +45,6 @@ int file_close(int fd);
 int file_seek(int fd, uint64_t offset, int whence);
 size_t file_get_size(int fd);
 int file_exists(const char *path);
+int file_unlink(const char *path);
 
 #endif /* FS_FILEIO_H */

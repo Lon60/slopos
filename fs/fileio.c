@@ -284,3 +284,24 @@ int file_exists(const char *path) {
     }
     return 1;
 }
+
+int file_unlink(const char *path) {
+    if (!path) {
+        return -1;
+    }
+    fileio_ensure_initialized();
+
+    ramfs_node_t *node = ramfs_find_node(path);
+    if (!node || node->type != RAMFS_TYPE_FILE) {
+        return -1;
+    }
+
+    for (int i = 0; i < FILEIO_MAX_OPEN_FILES; i++) {
+        file_descriptor_t *desc = &file_descriptors[i];
+        if (desc->valid && desc->node == node) {
+            fileio_reset_descriptor(desc);
+        }
+    }
+
+    return ramfs_remove_file(path);
+}
