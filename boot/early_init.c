@@ -20,6 +20,7 @@
 #include "../sched/task.h"
 #include "../sched/scheduler.h"
 #include "../shell/shell.h"
+#include "../fs/ramfs.h"
 
 // Forward declarations for other modules
 extern void verify_cpu_state(void);
@@ -252,6 +253,12 @@ current_location:
     // Initialize remaining kernel subsystems now that memory is online
     kprintln("Initializing remaining kernel subsystems...");
     initialize_kernel_subsystems();
+
+    if (ramfs_init() != 0) {
+        kprintln("ERROR: RamFS initialization failed");
+        kernel_panic("RamFS initialization failed");
+    }
+
     kprintln("Kernel subsystem initialization complete.");
 
     // Skip exception tests for now - we want a clean boot first

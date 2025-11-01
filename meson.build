@@ -56,6 +56,7 @@ drivers_sources = []
 sched_sources = []
 kernel_sources = []
 lib_sources = []
+fs_sources = []
 
 # Boot directory - assembly and early C code
 boot_dir = meson.current_source_dir() / 'boot'
@@ -138,14 +139,21 @@ shell_sources = files(
   'shell/builtins.c'
 )
 
+# File system directory
+fs_dir = meson.current_source_dir() / 'fs'
+fs_sources += files(
+  'fs/ramfs.c',
+  'fs/test_ramfs.c'
+)
+
 # Kernel main sources (root directory)
 kernel_sources += files()  # Will be populated when source files exist
 
 # Combine all source files
-all_sources = boot_sources + mm_sources + video_sources + drivers_sources + sched_sources + shell_sources + kernel_sources + lib_sources
+all_sources = boot_sources + mm_sources + video_sources + drivers_sources + sched_sources + shell_sources + fs_sources + kernel_sources + lib_sources
 
 # Include directories
-inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers', 'sched', 'shell', 'lib')
+inc_dirs = include_directories('.', 'boot', 'mm', 'video', 'drivers', 'sched', 'shell', 'fs', 'lib')
 
 # Custom target for assembly files (when they exist)
 # This will be used for boot assembly code that needs special handling

@@ -1289,6 +1289,14 @@ int run_scheduler_tests(void) {
         kprint("INTERRUPT_TEST: Kernel heap tests failed\n");
     }
 
+    extern int run_ramfs_tests(void);
+    int ramfs_tests_passed = run_ramfs_tests();
+    if (ramfs_tests_passed > 0) {
+        total_passed += ramfs_tests_passed;
+    } else {
+        kprint("INTERRUPT_TEST: RamFS tests failed\n");
+    }
+
     if (total_passed > 0) {
         kprint("INTERRUPT_TEST: Scheduler tests completed: ");
         kprint_decimal(total_passed);
