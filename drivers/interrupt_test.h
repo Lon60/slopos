@@ -81,6 +81,7 @@ int run_all_interrupt_tests(const struct interrupt_test_config *config);
 int run_basic_exception_tests(void);
 int run_memory_access_tests(void);
 int run_control_flow_tests(void);
+int run_scheduler_tests(void);
 
 // Test utilities
 void test_start(const char *name, int expected_exception);

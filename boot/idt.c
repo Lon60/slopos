@@ -6,6 +6,7 @@
 #include "idt.h"
 #include "constants.h"
 #include "safe_stack.h"
+#include "log.h"
 #include "../drivers/serial.h"
 #include "../drivers/irq.h"
 
@@ -28,7 +29,7 @@ static enum exception_mode current_exception_mode = EXCEPTION_MODE_NORMAL;
  * Initialize the IDT with default exception handlers
  */
 void idt_init(void) {
-    kprintln("IDT: Initializing Interrupt Descriptor Table");
+    boot_log_debug("IDT: Initializing Interrupt Descriptor Table");
 
     // Clear the IDT using byte-level access
     // NOTE: Direct struct member access in loops caused page faults due to
@@ -42,11 +43,11 @@ void idt_init(void) {
     idt_pointer.limit = (sizeof(struct idt_entry) * IDT_ENTRIES) - 1;
     idt_pointer.base = (uint64_t)&idt;
 
-    kprintln("IDT: Set up IDT pointer");
+    boot_log_debug("IDT: Set up IDT pointer");
 
     // Install exception handlers
     // Exceptions 0-19 are defined by Intel
-    kprintln("IDT: Installing exception handlers...");
+    boot_log_debug("IDT: Installing exception handlers...");
     idt_set_gate(0, (uint64_t)isr0, 0x08, IDT_GATE_INTERRUPT);   // Divide Error
     idt_set_gate(1, (uint64_t)isr1, 0x08, IDT_GATE_INTERRUPT);   // Debug
     idt_set_gate(2, (uint64_t)isr2, 0x08, IDT_GATE_INTERRUPT);   // NMI
@@ -88,9 +89,11 @@ void idt_init(void) {
 
     initialize_handler_tables();
 
-    kprint("IDT: Configured ");
-    kprint_dec(IDT_ENTRIES);
-    kprintln(" interrupt vectors");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("IDT: Configured ");
+        kprint_dec(IDT_ENTRIES);
+        kprintln(" interrupt vectors");
+    });
 }
 
 /*
@@ -108,16 +111,20 @@ void idt_set_gate(uint8_t vector, uint64_t handler, uint16_t selector, uint8_t t
 
 void idt_set_ist(uint8_t vector, uint8_t ist_index) {
     if ((uint16_t)vector >= IDT_ENTRIES) {
-        kprint("IDT: Invalid IST assignment for vector ");
-        kprint_dec(vector);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("IDT: Invalid IST assignment for vector ");
+            kprint_dec(vector);
+            kprintln("");
+        });
         return;
     }
 
     if (ist_index > 7) {
-        kprint("IDT: Invalid IST index ");
-        kprint_dec(ist_index);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("IDT: Invalid IST index ");
+            kprint_dec(ist_index);
+            kprintln("");
+        });
         return;
     }
 
@@ -129,16 +136,20 @@ void idt_set_ist(uint8_t vector, uint8_t ist_index) {
  */
 void idt_install_exception_handler(uint8_t vector, exception_handler_t handler) {
     if (vector >= 32) {
-        kprint("IDT: Ignoring handler install for non-exception vector ");
-        kprint_dec(vector);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("IDT: Ignoring handler install for non-exception vector ");
+            kprint_dec(vector);
+            kprintln("");
+        });
         return;
     }
 
     if (handler != NULL && is_critical_exception_internal(vector)) {
-        kprint("IDT: Refusing to override critical exception ");
-        kprint_dec(vector);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("IDT: Refusing to override critical exception ");
+            kprint_dec(vector);
+            kprintln("");
+        });
         return;
     }
 
@@ -149,13 +160,17 @@ void idt_install_exception_handler(uint8_t vector, exception_handler_t handler) 
     override_handlers[vector] = handler;
 
     if (handler != NULL) {
-        kprint("IDT: Registered override handler for exception ");
-        kprint_dec(vector);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("IDT: Registered override handler for exception ");
+            kprint_dec(vector);
+            kprintln("");
+        });
     } else {
-        kprint("IDT: Cleared override handler for exception ");
-        kprint_dec(vector);
-        kprintln("");
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("IDT: Cleared override handler for exception ");
+            kprint_dec(vector);
+            kprintln("");
+        });
     }
 }
 
@@ -209,16 +224,18 @@ int exception_is_critical(uint8_t vector) {
  * Load the IDT
  */
 void idt_load(void) {
-    kprint("IDT: Loading IDT at address ");
-    kprint_hex(idt_pointer.base);
-    kprint(" with limit ");
-    kprint_hex(idt_pointer.limit);
-    kprintln("");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("IDT: Loading IDT at address ");
+        kprint_hex(idt_pointer.base);
+        kprint(" with limit ");
+        kprint_hex(idt_pointer.limit);
+        kprintln("");
+    });
 
     // Load the IDT using assembly
     __asm__ volatile ("lidt %0" : : "m" (idt_pointer));
 
-    kprintln("IDT: Successfully loaded");
+    boot_log_debug("IDT: Successfully loaded");
 }
 
 /*

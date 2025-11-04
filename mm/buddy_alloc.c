@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/log.h"
 #include "phys_virt.h"
 /*
  * SlopOS Memory Management - Buddy Allocator for Physical Memory
@@ -458,7 +459,7 @@ int init_buddy_allocator(buddy_block_t *block_array, uint32_t max_blocks) {
         kernel_panic("init_buddy_allocator: Invalid parameters");
     }
 
-    kprint("Initializing buddy allocator\n");
+    boot_log_debug("Initializing buddy allocator");
 
     buddy_allocator.blocks = block_array;
     buddy_allocator.total_blocks = max_blocks;
@@ -480,9 +481,11 @@ int init_buddy_allocator(buddy_block_t *block_array, uint32_t max_blocks) {
 
     buddy_allocator.initialized = 1;
 
-    kprint("Buddy allocator initialized with ");
-    kprint_decimal(max_blocks);
-    kprint(" block descriptors\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Buddy allocator initialized with ");
+        kprint_decimal(max_blocks);
+        kprint(" block descriptors\n");
+    });
 
     return 0;
 }
@@ -496,7 +499,7 @@ int buddy_add_zone(uint64_t start_addr, uint64_t size, uint8_t zone_type) {
     }
 
     if (buddy_allocator.num_zones >= MAX_MEMORY_REGIONS) {
-        kprint("buddy_add_zone: Too many zones\n");
+        boot_log_info("buddy_add_zone: Too many zones");
         return -1;
     }
 
@@ -505,7 +508,7 @@ int buddy_add_zone(uint64_t start_addr, uint64_t size, uint8_t zone_type) {
     uint64_t aligned_end = (start_addr + size) & ~(BUDDY_PAGE_SIZE - 1);
 
     if (aligned_end <= aligned_start) {
-        kprint("buddy_add_zone: Zone too small after alignment\n");
+        boot_log_info("buddy_add_zone: Zone too small after alignment");
         return -1;
     }
 
@@ -523,7 +526,7 @@ int buddy_add_zone(uint64_t start_addr, uint64_t size, uint8_t zone_type) {
 
     uint64_t new_next_index = (uint64_t)buddy_allocator.next_block_index + (uint64_t)num_pages;
     if (new_next_index > buddy_allocator.total_blocks) {
-        kprint("buddy_add_zone: Not enough block descriptors for zone\n");
+        boot_log_info("buddy_add_zone: Not enough block descriptors for zone");
         return -1;
     }
     buddy_allocator.next_block_index = (uint32_t)new_next_index;
@@ -559,13 +562,15 @@ int buddy_add_zone(uint64_t start_addr, uint64_t size, uint8_t zone_type) {
     zone->initialized = 1;
     buddy_allocator.num_zones++;
 
-    kprint("Added buddy zone: ");
-    kprint_hex(aligned_start);
-    kprint(" - ");
-    kprint_hex(aligned_end);
-    kprint(" (");
-    kprint_decimal(aligned_size >> 20);
-    kprint("MB)\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Added buddy zone: ");
+        kprint_hex(aligned_start);
+        kprint(" - ");
+        kprint_hex(aligned_end);
+        kprint(" (");
+        kprint_decimal(aligned_size >> 20);
+        kprint("MB)\n");
+    });
 
     return 0;
 }

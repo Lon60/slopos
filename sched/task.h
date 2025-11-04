@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "../boot/constants.h"
 
 /* ========================================================================
@@ -89,15 +90,13 @@ typedef struct task {
 
     /* Scheduling information */
     uint64_t time_slice;                 /* CPU time quantum */
+    uint64_t time_slice_remaining;       /* Remaining ticks in current quantum */
     uint64_t total_runtime;              /* Total CPU time used */
     uint64_t creation_time;              /* Task creation timestamp */
     uint32_t yield_count;                /* Number of voluntary yields */
     uint64_t last_run_timestamp;         /* Timestamp when task was last scheduled */
     uint32_t waiting_on_task_id;         /* Task this task is waiting on, if any */
 
-    /* Task relationships */
-    struct task *next;                   /* Next task in scheduler queue */
-    struct task *prev;                   /* Previous task in scheduler queue */
 } task_t;
 
 /*
@@ -110,5 +109,14 @@ const char *task_state_to_string(uint8_t state);
 
 typedef void (*task_iterate_cb)(task_t *task, void *context);
 void task_iterate_active(task_iterate_cb callback, void *context);
+
+/*
+ * Task state helpers for scheduler coordination
+ */
+uint8_t task_get_state(const task_t *task);
+bool task_is_ready(const task_t *task);
+bool task_is_running(const task_t *task);
+bool task_is_blocked(const task_t *task);
+bool task_is_terminated(const task_t *task);
 
 #endif /* SCHED_TASK_H */

@@ -8,22 +8,18 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../boot/debug.h"
+#include "../boot/log.h"
 #include "../drivers/serial.h"
+#include "../drivers/pit.h"
 #include "../mm/paging.h"
 #include "scheduler.h"
 
 /* Forward declarations from context_switch.s */
 extern void context_switch(void *old_context, void *new_context);
+extern void simple_context_switch(void *old_context, void *new_context);
 
 /* Forward declarations from process_vm.c */
 extern process_page_dir_t *process_vm_get_page_dir(uint32_t process_id);
-
-/* Task states from task.c */
-#define TASK_STATE_INVALID            0
-#define TASK_STATE_READY              1
-#define TASK_STATE_RUNNING            2
-#define TASK_STATE_BLOCKED            3
-#define TASK_STATE_TERMINATED         4
 
 /* ========================================================================
  * SCHEDULER CONSTANTS
@@ -61,15 +57,38 @@ typedef struct scheduler {
     uint8_t enabled;                       /* Scheduler enabled flag */
     uint16_t time_slice;                   /* Current time slice value */
 
+    /* Return context for testing (when scheduler exits) */
+    task_context_t return_context;         /* Context to return to when scheduler exits */
+
     /* Statistics and monitoring */
     uint64_t total_switches;               /* Total context switches */
     uint64_t total_yields;                 /* Total voluntary yields */
     uint64_t idle_time;                    /* Time spent in idle task */
+    uint64_t total_ticks;                  /* Timer ticks observed */
+    uint64_t total_preemptions;            /* Forced preemptions */
     uint32_t schedule_calls;               /* Number of schedule() calls */
+    uint8_t preemption_enabled;            /* Preemption toggle */
+    uint8_t reschedule_pending;            /* Deferred reschedule request */
+    uint8_t in_schedule;                   /* Recursion guard */
+    uint8_t reserved;                      /* Padding */
 } scheduler_t;
 
 /* Global scheduler instance */
 static scheduler_t scheduler = {0};
+
+static uint32_t scheduler_get_default_time_slice(void) {
+    return scheduler.time_slice ? scheduler.time_slice : SCHED_DEFAULT_TIME_SLICE;
+}
+
+static void scheduler_reset_task_quantum(task_t *task) {
+    if (!task) {
+        return;
+    }
+
+    uint64_t slice = task->time_slice ? task->time_slice : scheduler_get_default_time_slice();
+    task->time_slice = slice;
+    task->time_slice_remaining = slice;
+}
 
 /* ========================================================================
  * READY QUEUE MANAGEMENT
@@ -183,6 +202,19 @@ int schedule_task(task_t *task) {
         return -1;
     }
 
+    if (!task_is_ready(task)) {
+        kprint("schedule_task: task ");
+        kprint_decimal(task->task_id);
+        kprint(" not ready (state ");
+        kprint(task_state_to_string(task_get_state(task)));
+        kprint(")\n");
+        return -1;
+    }
+
+    if (task->time_slice_remaining == 0) {
+        scheduler_reset_task_quantum(task);
+    }
+
     if (ready_queue_enqueue(&scheduler.ready_queue, task) != 0) {
         return -1;
     }
@@ -221,7 +253,7 @@ static task_t *select_next_task(void) {
     }
 
     /* If no tasks available, use idle task */
-    if (!next_task && scheduler.idle_task) {
+    if (!next_task && scheduler.idle_task && !task_is_terminated(scheduler.idle_task)) {
         next_task = scheduler.idle_task;
     }
 
@@ -248,6 +280,7 @@ static void switch_to_task(task_t *new_task) {
     /* Update scheduler state */
     scheduler.current_task = new_task;
     task_set_current(new_task);
+    scheduler_reset_task_quantum(new_task);
     scheduler.total_switches++;
 
     /* Ensure CR3 matches the task's process address space */
@@ -280,30 +313,64 @@ void schedule(void) {
         return;
     }
 
+    scheduler.in_schedule++;
     scheduler.schedule_calls++;
 
     /* Get current task and put it back in ready queue if still runnable */
     task_t *current = scheduler.current_task;
     if (current && current != scheduler.idle_task) {
-        /* Only re-queue if task is still ready to run */
-        task_t *task_info;
-        if (task_get_info(current->task_id, &task_info) == 0 &&
-            task_info->state == TASK_STATE_RUNNING) {
-
-            /* Mark as ready and add back to queue */
-            task_set_state(current->task_id, TASK_STATE_READY);
-            ready_queue_enqueue(&scheduler.ready_queue, current);
+        if (task_is_running(current)) {
+            if (task_set_state(current->task_id, TASK_STATE_READY) != 0) {
+                kprint("schedule: failed to mark task ");
+                kprint_decimal(current->task_id);
+                kprint(" ready\n");
+            } else if (ready_queue_enqueue(&scheduler.ready_queue, current) != 0) {
+                kprint("schedule: ready queue full when re-queuing task ");
+                kprint_decimal(current->task_id);
+                kprint("\n");
+            } else {
+                scheduler_reset_task_quantum(current);
+            }
+        } else if (!task_is_blocked(current) && !task_is_terminated(current)) {
+            kprint("schedule: skipping requeue for task ");
+            kprint_decimal(current->task_id);
+            kprint(" in state ");
+            kprint(task_state_to_string(task_get_state(current)));
+            kprint("\n");
         }
     }
 
     /* Select next task to run */
     task_t *next_task = select_next_task();
     if (!next_task) {
-        return;
+        /* No tasks to run - check if we should exit scheduler */
+        /* For testing purposes, if idle task has terminated, exit scheduler */
+        if (scheduler.idle_task && task_is_terminated(scheduler.idle_task)) {
+            /* Idle task terminated - exit scheduler by switching to return context */
+            scheduler.enabled = 0;
+            /* Switch back to the saved return context */
+            if (scheduler.current_task) {
+                scheduler.in_schedule--;
+                context_switch(&scheduler.current_task->context, &scheduler.return_context);
+                return;
+            } else {
+                /* No current task - this shouldn't happen */
+                goto out;
+            }
+        }
+        /* No tasks available but idle task still exists - shouldn't happen */
+        goto out;
     }
 
     /* Switch to the selected task */
+    scheduler.in_schedule--;
     switch_to_task(next_task);
+    return;
+
+out:
+    if (scheduler.in_schedule > 0) {
+        scheduler.in_schedule--;
+    }
 }
 
 /*
@@ -331,7 +398,11 @@ void block_current_task(void) {
     }
 
     /* Mark task as blocked */
-    task_set_state(current->task_id, TASK_STATE_BLOCKED);
+    if (task_set_state(current->task_id, TASK_STATE_BLOCKED) != 0) {
+        kprint("block_current_task: invalid state transition for task ");
+        kprint_decimal(current->task_id);
+        kprint("\n");
+    }
 
     /* Remove from ready queue and schedule next task */
     unschedule_task(current);
@@ -375,7 +446,11 @@ int unblock_task(task_t *task) {
     }
 
     /* Mark task as ready */
-    task_set_state(task->task_id, TASK_STATE_READY);
+    if (task_set_state(task->task_id, TASK_STATE_READY) != 0) {
+        kprint("unblock_task: invalid state transition for task ");
+        kprint_decimal(task->task_id);
+        kprint("\n");
+    }
 
     /* Add back to ready queue */
     return schedule_task(task);
@@ -427,11 +502,29 @@ static void idle_task_function(void *arg) {
         /* Simple idle loop - could implement power management here */
         scheduler.idle_time++;
 
+        /* Check if we should exit (for testing purposes) */
+        /* If there are no user tasks and we're in a test environment, exit */
+        extern int is_kernel_initialized(void);
+        if (is_kernel_initialized() && scheduler.idle_time > 1000) {
+            /* Count active tasks */
+            extern void get_task_stats(uint32_t *total_tasks, uint32_t *active_tasks,
+                                     uint64_t *context_switches);
+            uint32_t active_tasks = 0;
+            get_task_stats(NULL, &active_tasks, NULL);
+            if (active_tasks <= 1) {  /* Only idle task remains */
+                /* Exit idle loop - return to scheduler caller */
+                break;
+            }
+        }
+
         /* Yield periodically to check for new tasks */
-        if (scheduler.idle_time % 10000 == 0) {
+        if (scheduler.idle_time % 1000 == 0) {
             yield();
         }
     }
+
+    /* Return to scheduler - this should only happen in test scenarios */
+    scheduler.enabled = 0;  /* Disable scheduler */
 }
 
 /* ========================================================================
@@ -455,6 +548,11 @@ int init_scheduler(void) {
     scheduler.total_yields = 0;
     scheduler.idle_time = 0;
     scheduler.schedule_calls = 0;
+    scheduler.total_ticks = 0;
+    scheduler.total_preemptions = 0;
+    scheduler.preemption_enabled = 0;
+    scheduler.reschedule_pending = 0;
+    scheduler.in_schedule = 0;
 
     return 0;
 }
@@ -495,6 +593,12 @@ int start_scheduler(void) {
 
     scheduler.enabled = 1;
 
+    /* Save current context as return context for testing */
+    extern void init_kernel_context(task_context_t *context);
+    init_kernel_context(&scheduler.return_context);
+
+    scheduler_set_preemption_enabled(1);
+
     /* If we have tasks in ready queue, start scheduling */
     if (!ready_queue_empty(&scheduler.ready_queue)) {
         schedule();
@@ -505,6 +609,7 @@ int start_scheduler(void) {
         return -1;
     }
 
+    /* If we get here, scheduler has exited and switched back to return context */
     return 0;
 }
 
@@ -563,4 +668,82 @@ int scheduler_is_enabled(void) {
  */
 task_t *scheduler_get_current_task(void) {
     return scheduler.current_task;
+}
+
+void scheduler_set_preemption_enabled(int enabled) {
+    scheduler.preemption_enabled = enabled ? 1 : 0;
+    if (scheduler.preemption_enabled) {
+        pit_enable_irq();
+    } else {
+        scheduler.reschedule_pending = 0;
+        pit_disable_irq();
+    }
+}
+
+int scheduler_is_preemption_enabled(void) {
+    return scheduler.preemption_enabled;
+}
+
+void scheduler_timer_tick(void) {
+    scheduler.total_ticks++;
+
+    if (!scheduler.enabled || !scheduler.preemption_enabled) {
+        return;
+    }
+
+    task_t *current = scheduler.current_task;
+    if (!current) {
+        return;
+    }
+
+    if (scheduler.in_schedule) {
+        return;
+    }
+
+    if (current == scheduler.idle_task) {
+        if (scheduler.ready_queue.count > 0) {
+            scheduler.reschedule_pending = 1;
+        }
+        return;
+    }
+
+    if (current->flags & TASK_FLAG_NO_PREEMPT) {
+        return;
+    }
+
+    if (current->time_slice_remaining > 0) {
+        current->time_slice_remaining--;
+    }
+
+    if (current->time_slice_remaining > 0) {
+        return;
+    }
+
+    if (scheduler.ready_queue.count == 0) {
+        scheduler_reset_task_quantum(current);
+        return;
+    }
+
+    if (!scheduler.reschedule_pending) {
+        scheduler.total_preemptions++;
+    }
+    scheduler.reschedule_pending = 1;
+}
+
+void scheduler_handle_post_irq(void) {
+    if (!scheduler.reschedule_pending) {
+        return;
+    }
+
+    if (!scheduler.enabled || !scheduler.preemption_enabled) {
+        scheduler.reschedule_pending = 0;
+        return;
+    }
+
+    if (scheduler.in_schedule) {
+        return;
+    }
+
+    scheduler.reschedule_pending = 0;
+    schedule();
 }

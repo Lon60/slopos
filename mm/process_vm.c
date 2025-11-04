@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
+#include "../boot/log.h"
 #include "../boot/integration.h"
 #include "kernel_heap.h"
 #include "page_alloc.h"
@@ -113,11 +114,17 @@ static void free_vma(vm_area_t *vma) {
 }
 
 static int map_user_range(uint64_t start_addr, uint64_t end_addr, uint64_t map_flags, uint32_t *pages_mapped_out) {
+    extern process_page_dir_t *get_current_page_directory(void);
+    extern int switch_page_directory(process_page_dir_t *page_dir);
+    
     if (start_addr & (PAGE_SIZE_4KB - 1) || end_addr & (PAGE_SIZE_4KB - 1) || end_addr <= start_addr) {
         kprint("map_user_range: Unaligned or invalid range\n");
         return -1;
     }
 
+    /* This function should be called with the target process's page directory already active */
+    /* But if not, we'll use the current one (which should be the process's during creation) */
+    
     uint64_t current = start_addr;
     uint32_t mapped = 0;
 
@@ -178,7 +185,7 @@ static void unmap_user_range(uint64_t start_addr, uint64_t end_addr) {
  * Find process VM descriptor by process ID
  */
 static process_vm_t *find_process_vm(uint32_t process_id) {
-    for (uint32_t i = 0; i < vm_manager.num_processes; i++) {
+    for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
         if (vm_manager.processes[i].process_id == process_id) {
             return &vm_manager.processes[i];
         }
@@ -268,6 +275,20 @@ uint32_t create_process_vm(void) {
         return INVALID_PROCESS_ID;
     }
 
+    /* Find first free process slot */
+    process_vm_t *process = NULL;
+    for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+        if (vm_manager.processes[i].process_id == INVALID_PROCESS_ID) {
+            process = &vm_manager.processes[i];
+            break;
+        }
+    }
+
+    if (!process) {
+        kprint("create_process_vm: No free process slots available\n");
+        return INVALID_PROCESS_ID;
+    }
+
     /* Allocate new page directory */
     uint64_t pml4_phys = alloc_page_frame(0);
     if (!pml4_phys) {
@@ -286,8 +307,6 @@ uint32_t create_process_vm(void) {
         pml4->entries[i] = 0;
     }
 
-    /* Find free process slot */
-    process_vm_t *process = &vm_manager.processes[vm_manager.num_processes];
     uint32_t process_id = vm_manager.next_process_id++;
 
     /* Allocate process page directory descriptor */
@@ -330,16 +349,38 @@ uint32_t create_process_vm(void) {
                        VM_FLAG_READ | VM_FLAG_WRITE | VM_FLAG_USER);
 
     /* Map initial stack pages eagerly */
+    /* Temporarily switch to process page directory for mapping */
+    extern process_page_dir_t *get_current_page_directory(void);
+    extern int switch_page_directory(process_page_dir_t *page_dir);
+    process_page_dir_t *saved_page_dir = get_current_page_directory();
+    
+    /* Switch to process's page directory */
+    if (switch_page_directory(page_dir) != 0) {
+        kprint("create_process_vm: Failed to switch to process page directory\n");
+        free_page_frame(page_dir->pml4_phys);
+        kfree(page_dir);
+        return INVALID_PROCESS_ID;
+    }
+    
     uint64_t stack_map_flags = PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE;
     uint32_t stack_pages = 0;
     if (map_user_range(process->stack_start, process->stack_end, stack_map_flags, &stack_pages) != 0) {
         kprint("create_process_vm: Failed to map process stack\n");
+        /* Switch back before cleanup */
+        if (saved_page_dir) {
+            switch_page_directory(saved_page_dir);
+        }
         unmap_user_range(process->stack_start, process->stack_end);
         free_page_frame(process->page_dir->pml4_phys);
         kfree(process->page_dir);
         process->page_dir = NULL;
         process->process_id = INVALID_PROCESS_ID;
         return INVALID_PROCESS_ID;
+    }
+    
+    /* Switch back to kernel page directory */
+    if (saved_page_dir) {
+        switch_page_directory(saved_page_dir);
     }
 
     process->total_pages += stack_pages;
@@ -358,17 +399,33 @@ uint32_t create_process_vm(void) {
 /*
  * Destroy a process virtual memory space
  * Frees all allocated pages and removes from system
+ * Idempotent: safe to call multiple times for the same PID
  */
 int destroy_process_vm(uint32_t process_id) {
     process_vm_t *process = find_process_vm(process_id);
     if (!process) {
-        kprint("destroy_process_vm: Process not found\n");
-        return -1;
+        /* Already destroyed or never existed - not an error for idempotency */
+        return 0;
+    }
+
+    /* Check if already destroyed (double-free protection) */
+    if (process->process_id == INVALID_PROCESS_ID) {
+        return 0;
     }
 
     kprint("Destroying process VM space for PID ");
     kprint_decimal(process_id);
     kprint("\n");
+
+    /* Switch to process's page directory for unmapping */
+    extern process_page_dir_t *get_current_page_directory(void);
+    extern int switch_page_directory(process_page_dir_t *page_dir);
+    process_page_dir_t *saved_page_dir = get_current_page_directory();
+    
+    if (process->page_dir && switch_page_directory(process->page_dir) != 0) {
+        kprint("destroy_process_vm: Failed to switch to process page directory\n");
+        /* Continue with cleanup even if switch fails */
+    }
 
     /* Free all VMAs */
     vm_area_t *vma = process->vma_list;
@@ -381,6 +438,11 @@ int destroy_process_vm(uint32_t process_id) {
         vma = next;
     }
     process->vma_list = NULL;
+
+    /* Switch back to kernel page directory */
+    if (saved_page_dir && saved_page_dir != process->page_dir) {
+        switch_page_directory(saved_page_dir);
+    }
 
     /* Free page directory structures */
     if (process->page_dir) {
@@ -404,10 +466,17 @@ int destroy_process_vm(uint32_t process_id) {
         }
     }
 
-    /* Mark process slot as free */
+    /* Update active_process if it points to this process */
+    if (vm_manager.active_process == process) {
+        vm_manager.active_process = NULL;
+    }
+
+    /* Mark process slot as free and clear state */
     process->process_id = INVALID_PROCESS_ID;
     process->vma_list = NULL;
     process->next = NULL;
+    process->total_pages = 0;
+    process->flags = 0;
     vm_manager.num_processes--;
 
     return 0;
@@ -422,6 +491,9 @@ int destroy_process_vm(uint32_t process_id) {
  * Returns virtual address, 0 on failure
  */
 uint64_t process_vm_alloc(uint32_t process_id, uint64_t size, uint32_t flags) {
+    extern process_page_dir_t *get_current_page_directory(void);
+    extern int switch_page_directory(process_page_dir_t *page_dir);
+    
     process_vm_t *process = find_process_vm(process_id);
     if (!process) {
         return 0;
@@ -450,16 +522,38 @@ uint64_t process_vm_alloc(uint32_t process_id, uint64_t size, uint32_t flags) {
         map_flags |= PAGE_WRITABLE;
     }
 
+    /* Switch to process's page directory for mapping */
+    process_page_dir_t *saved_page_dir = get_current_page_directory();
+    if (switch_page_directory(process->page_dir) != 0) {
+        kprint("process_vm_alloc: Failed to switch to process page directory\n");
+        return 0;
+    }
+
     uint32_t pages_mapped = 0;
     if (map_user_range(start_addr, end_addr, map_flags, &pages_mapped) != 0) {
+        /* Switch back on failure */
+        if (saved_page_dir) {
+            switch_page_directory(saved_page_dir);
+        }
         return 0;
+    }
+
+    /* Switch back to kernel page directory */
+    if (saved_page_dir) {
+        switch_page_directory(saved_page_dir);
     }
 
     process->heap_end = end_addr;
 
     if (add_vma_to_process(process, start_addr, end_addr, protection_flags | VM_FLAG_USER) != 0) {
         kprint("process_vm_alloc: Failed to record VMA\n");
-        unmap_user_range(start_addr, end_addr);
+        /* Need to unmap with process page directory active */
+        if (switch_page_directory(process->page_dir) == 0) {
+            unmap_user_range(start_addr, end_addr);
+            if (saved_page_dir) {
+                switch_page_directory(saved_page_dir);
+            }
+        }
         process->heap_end = start_addr;
         return 0;
     }
@@ -493,7 +587,7 @@ int process_vm_free(uint32_t process_id, uint64_t vaddr, uint64_t size) {
  * Initialize the process virtual memory manager
  */
 int init_process_vm(void) {
-    kprint("Initializing process virtual memory manager\n");
+    boot_log_debug("Initializing process virtual memory manager");
 
     vm_manager.num_processes = 0;
     vm_manager.next_process_id = 1;  /* Start from 1, 0 is kernel */
@@ -510,7 +604,7 @@ int init_process_vm(void) {
         vm_manager.processes[i].next = NULL;
     }
 
-    kprint("Process VM manager initialized\n");
+    boot_log_debug("Process VM manager initialized");
     return 0;
 }
 

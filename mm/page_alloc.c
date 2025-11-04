@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/constants.h"
+#include "../boot/log.h"
 #include "../drivers/serial.h"
 #include "page_alloc.h"
 #include "phys_virt.h"
@@ -125,11 +126,13 @@ static int find_contiguous_frames(uint32_t count, uint32_t flags, uint32_t *star
 
 #ifdef PAGE_ALLOC_DEBUG
 static void page_alloc_log_contiguous(uint64_t phys_addr, uint32_t count) {
-    kprint("alloc_page_frames: allocated ");
-    kprint_decimal(count);
-    kprint(" pages @ ");
-    kprint_hex(phys_addr);
-    kprint("\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("alloc_page_frames: allocated ");
+        kprint_decimal(count);
+        kprint(" pages @ ");
+        kprint_hex(phys_addr);
+        kprint("\n");
+    });
 }
 #else
 #define page_alloc_log_contiguous(phys_addr, count) ((void)0)
@@ -343,7 +346,7 @@ static void page_alloc_debug_self_test(void) {
  */
 static void add_to_free_list(uint32_t frame_num) {
     if (!is_valid_frame(frame_num)) {
-        kprint("add_to_free_list: Invalid frame number\n");
+        boot_log_info("add_to_free_list: Invalid frame number");
         return;
     }
 
@@ -391,7 +394,7 @@ uint64_t alloc_page_frame(uint32_t flags) {
     uint32_t frame_num = remove_from_free_list();
 
     if (frame_num == INVALID_PAGE_FRAME) {
-        kprint("alloc_page_frame: No free pages available\n");
+        boot_log_info("alloc_page_frame: No free pages available");
         return 0;
     }
 
@@ -436,7 +439,7 @@ static uint64_t alloc_page_frames(uint32_t count, uint32_t flags) {
 
     uint32_t start_frame = 0;
     if (find_contiguous_frames(count, flags, &start_frame) != 0) {
-        kprint("alloc_page_frames: Unable to satisfy contiguous allocation\n");
+        boot_log_info("alloc_page_frames: Unable to satisfy contiguous allocation");
         return 0;
     }
 
@@ -457,7 +460,7 @@ static uint64_t alloc_page_frames(uint32_t count, uint32_t flags) {
 
     if (frames_removed != count) {
         rollback_contiguous_allocation(start_frame, frames_removed);
-        kprint("alloc_page_frames: Failed to unlink frames from free list\n");
+        boot_log_info("alloc_page_frames: Failed to unlink frames from free list");
         return 0;
     }
 
@@ -466,7 +469,7 @@ static uint64_t alloc_page_frames(uint32_t count, uint32_t flags) {
             uint64_t phys_addr = frame_to_phys(start_frame + i);
             if (mm_zero_physical_page(phys_addr) != 0) {
                 rollback_contiguous_allocation(start_frame, count);
-                kprint("alloc_page_frames: Zeroing contiguous pages failed\n");
+                boot_log_info("alloc_page_frames: Zeroing contiguous pages failed");
                 return 0;
             }
         }
@@ -499,14 +502,14 @@ int free_page_frame(uint64_t phys_addr) {
     uint32_t frame_num = phys_to_frame(phys_addr);
 
     if (!is_valid_frame(frame_num)) {
-        kprint("free_page_frame: Invalid physical address\n");
+        boot_log_info("free_page_frame: Invalid physical address");
         return -1;
     }
 
     page_frame_t *frame = get_frame_desc(frame_num);
 
     if (!frame_state_is_allocated(frame->state)) {
-        kprint("free_page_frame: Page not allocated\n");
+        boot_log_info("free_page_frame: Page not allocated");
         return -1;
     }
 
@@ -537,14 +540,14 @@ int ref_page_frame(uint64_t phys_addr) {
     uint32_t frame_num = phys_to_frame(phys_addr);
 
     if (!is_valid_frame(frame_num)) {
-        kprint("ref_page_frame: Invalid physical address\n");
+        boot_log_info("ref_page_frame: Invalid physical address");
         return -1;
     }
 
     page_frame_t *frame = get_frame_desc(frame_num);
 
     if (!frame_state_is_allocated(frame->state)) {
-        kprint("ref_page_frame: Page not allocated\n");
+        boot_log_info("ref_page_frame: Page not allocated");
         return -1;
     }
 
@@ -562,7 +565,7 @@ int ref_page_frame(uint64_t phys_addr) {
  */
 int add_page_alloc_region(uint64_t start_addr, uint64_t size, uint8_t type) {
     if (page_allocator.num_regions >= MAX_MEMORY_REGIONS) {
-        kprint("add_page_alloc_region: Too many memory regions\n");
+        boot_log_info("add_page_alloc_region: Too many memory regions");
         return -1;
     }
 
@@ -571,7 +574,7 @@ int add_page_alloc_region(uint64_t start_addr, uint64_t size, uint8_t type) {
     uint64_t aligned_end = (start_addr + size) & ~(PAGE_SIZE_4KB - 1);
 
     if (aligned_end <= aligned_start) {
-        kprint("add_page_alloc_region: Region too small after alignment\n");
+        boot_log_info("add_page_alloc_region: Region too small after alignment");
         return -1;
     }
 
@@ -589,13 +592,15 @@ int add_page_alloc_region(uint64_t start_addr, uint64_t size, uint8_t type) {
 
     page_allocator.num_regions++;
 
-    kprint("Added memory region: ");
-    kprint_hex(aligned_start);
-    kprint(" - ");
-    kprint_hex(aligned_end);
-    kprint(" (");
-    kprint_decimal(num_frames);
-    kprint(" frames)\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Added memory region: ");
+        kprint_hex(aligned_start);
+        kprint(" - ");
+        kprint_hex(aligned_end);
+        kprint(" (");
+        kprint_decimal(num_frames);
+        kprint(" frames)\n");
+    });
 
     return 0;
 }
@@ -615,7 +620,7 @@ int init_page_allocator(void *frame_array, uint32_t max_frames) {
         kernel_panic("init_page_allocator: Invalid parameters");
     }
 
-    kprint("Initializing page frame allocator\n");
+    boot_log_debug("Initializing page frame allocator");
 
     page_allocator.frames = frames;
     page_allocator.total_frames = max_frames;
@@ -634,9 +639,11 @@ int init_page_allocator(void *frame_array, uint32_t max_frames) {
         frames[i].next_free = INVALID_PAGE_FRAME;
     }
 
-    kprint("Page frame allocator initialized with ");
-    kprint_decimal(max_frames);
-    kprint(" frame descriptors\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Page frame allocator initialized with ");
+        kprint_decimal(max_frames);
+        kprint(" frame descriptors\n");
+    });
 
     return 0;
 }
@@ -646,7 +653,7 @@ int init_page_allocator(void *frame_array, uint32_t max_frames) {
  * Builds free lists from available memory regions
  */
 int finalize_page_allocator(void) {
-    kprint("Finalizing page frame allocator\n");
+    boot_log_debug("Finalizing page frame allocator");
 
     uint32_t total_available = 0;
 
@@ -669,9 +676,11 @@ int finalize_page_allocator(void) {
         }
     }
 
-    kprint("Page allocator ready: ");
-    kprint_decimal(total_available);
-    kprint(" pages available\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Page allocator ready: ");
+        kprint_decimal(total_available);
+        kprint(" pages available\n");
+    });
 
 #ifdef PAGE_ALLOC_DEBUG
     page_alloc_debug_self_test();

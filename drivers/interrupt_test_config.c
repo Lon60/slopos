@@ -180,6 +180,7 @@ static void apply_enable_token(struct interrupt_test_config *config,
     if (string_equals_ci(value, "off") || string_equals_ci(value, "false") ||
         string_equals_ci(value, "disabled")) {
         config->enabled = 0;
+        config->shutdown_on_complete = 0;
         return;
     }
 
@@ -191,6 +192,7 @@ static void apply_enable_token(struct interrupt_test_config *config,
     } else {
         config->enabled = 0;
         config->suite_mask = 0;
+        config->shutdown_on_complete = 0;
     }
 }
 

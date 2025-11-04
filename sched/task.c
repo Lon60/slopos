@@ -8,9 +8,11 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../boot/debug.h"
+#include "../boot/log.h"
 #include "../drivers/serial.h"
 #include "../mm/kernel_heap.h"
 #include "../mm/paging.h"
+#include "../mm/kernel_heap.h"
 #include "task.h"
 #include "scheduler.h"
 
@@ -43,15 +45,7 @@ typedef struct task_manager {
     uint32_t num_tasks;                  /* Number of active tasks */
     uint32_t next_task_id;               /* Next task ID to assign */
 
-    /* Current execution state */
-    task_t *current_task;                /* Currently running task */
-    task_t *idle_task;                   /* Idle task (always ready) */
-
-    /* Ready queue */
-    task_t *ready_queue_head;            /* Head of ready task queue */
-    task_t *ready_queue_tail;            /* Tail of ready task queue */
-
-    /* Statistics */
+    /* Lifecycle statistics */
     uint64_t total_context_switches;     /* Total context switches performed */
     uint64_t total_yields;               /* Total voluntary yields */
     uint32_t tasks_created;              /* Total tasks created */
@@ -101,7 +95,7 @@ static void release_task_dependents(uint32_t completed_task_id) {
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         task_t *dependent = &task_manager.tasks[i];
 
-        if (dependent->state != TASK_STATE_BLOCKED) {
+        if (!task_is_blocked(dependent)) {
             continue;
         }
 
@@ -152,7 +146,15 @@ static void init_task_context(task_t *task) {
         task->context.es = GDT_DATA_SELECTOR;
         task->context.fs = 0;
         task->context.gs = 0;
-        task->context.ss = GDT_DATA_SELECTOR;
+        task->context.ss = GDT_DATA_SELECTOR;  /* Stack segment must match data segment for ring 0 */
+    } else {
+        /* User mode tasks: segment registers will be set by user mode setup code */
+        task->context.cs = 0;
+        task->context.ds = 0;
+        task->context.es = 0;
+        task->context.fs = 0;
+        task->context.gs = 0;
+        task->context.ss = 0;
     }
 
     /* Page directory will be set by scheduler when switching */
@@ -189,7 +191,9 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     uint32_t process_id = INVALID_PROCESS_ID;
     uint64_t stack_base = 0;
 
+    /* Handle kernel mode tasks differently from user mode tasks */
     if (flags & TASK_FLAG_KERNEL_MODE) {
+        /* Kernel tasks use kernel page directory and kernel heap */
         void *stack = kmalloc(TASK_STACK_SIZE);
         if (!stack) {
             kprint("task_create: Failed to allocate kernel stack\n");
@@ -198,12 +202,14 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
 
         stack_base = (uint64_t)stack;
     } else {
+        /* User mode tasks get their own process VM space */
         process_id = create_process_vm();
         if (process_id == INVALID_PROCESS_ID) {
             kprint("task_create: Failed to create process VM\n");
             return INVALID_TASK_ID;
         }
 
+        /* Allocate stack for task */
         stack_base = process_vm_alloc(process_id, TASK_STACK_SIZE,
                                       PROCESS_VM_FLAG_READ |
                                       PROCESS_VM_FLAG_WRITE |
@@ -239,21 +245,22 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     task->entry_point = entry_point;
     task->entry_arg = arg;
     task->time_slice = 10;  /* Default time slice */
+    task->time_slice_remaining = task->time_slice;
     task->total_runtime = 0;
     task->creation_time = debug_get_timestamp();
     task->yield_count = 0;
     task->last_run_timestamp = 0;
     task->waiting_on_task_id = INVALID_TASK_ID;
-    task->next = NULL;
-    task->prev = NULL;
 
     /* Initialize CPU context */
     init_task_context(task);
 
+    /* Record page directory for context switches */
     if (flags & TASK_FLAG_KERNEL_MODE) {
-        task->process_id = INVALID_PROCESS_ID;
+        /* Kernel tasks use kernel page directory */
         task->context.cr3 = read_cr3() & ~0xFFFULL;
     } else {
+        /* User mode tasks use their process page directory */
         process_page_dir_t *page_dir = process_vm_get_page_dir(process_id);
         if (page_dir && page_dir->pml4_phys) {
             task->context.cr3 = page_dir->pml4_phys;
@@ -264,11 +271,13 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     task_manager.num_tasks++;
     task_manager.tasks_created++;
 
-    kprint("Created task '");
-    kprint(name);
-    kprint("' with ID ");
-    kprint_decimal(task_id);
-    kprint("\n");
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+        kprint("Created task '");
+        kprint(name);
+        kprint("' with ID ");
+        kprint_decimal(task_id);
+        kprint("\n");
+    });
 
     return task_id;
 }
@@ -281,7 +290,7 @@ int task_terminate(uint32_t task_id) {
     uint32_t resolved_id = task_id;
 
     if ((int32_t)task_id == -1) {
-        task = task_manager.current_task;
+        task = scheduler_get_current_task();
         if (!task) {
             kprint("task_terminate: No current task to terminate\n");
             return -1;
@@ -317,18 +326,16 @@ int task_terminate(uint32_t task_id) {
     /* Mark task as terminated */
     task->state = TASK_STATE_TERMINATED;
 
-    if (task == task_manager.current_task) {
-        task_manager.current_task = NULL;
-    }
-
     /* Wake any dependents waiting on this task */
     release_task_dependents(resolved_id);
 
-    /* Free process VM space */
+    /* Free resources based on task mode */
     if (task->process_id != INVALID_PROCESS_ID) {
+        /* User mode tasks: free process VM space */
         destroy_process_vm(task->process_id);
         destroy_process_vma_space(task->process_id);
     } else if (task->stack_base) {
+        /* Kernel tasks: free stack from kernel heap */
         kfree((void *)task->stack_base);
     }
 
@@ -340,10 +347,9 @@ int task_terminate(uint32_t task_id) {
     task->stack_pointer = 0;
     task->stack_size = 0;
     task->time_slice = 0;
+    task->time_slice_remaining = 0;
     task->total_runtime = 0;
     task->yield_count = 0;
-    task->next = NULL;
-    task->prev = NULL;
     task->entry_point = NULL;
     task->entry_arg = NULL;
     task->creation_time = 0;
@@ -365,7 +371,7 @@ int task_terminate(uint32_t task_id) {
  */
 int task_shutdown_all(void) {
     int result = 0;
-    task_t *current = task_manager.current_task;
+    task_t *current = scheduler_get_current_task();
 
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         task_t *task = &task_manager.tasks[i];
@@ -413,6 +419,35 @@ int task_get_info(uint32_t task_id, task_t **task_info) {
 /*
  * Change task state
  */
+static int task_state_transition_allowed(uint8_t old_state, uint8_t new_state) {
+    if (old_state == new_state) {
+        return 1;
+    }
+
+    switch (old_state) {
+    case TASK_STATE_INVALID:
+        return new_state == TASK_STATE_READY || new_state == TASK_STATE_INVALID;
+    case TASK_STATE_READY:
+        return new_state == TASK_STATE_RUNNING ||
+               new_state == TASK_STATE_BLOCKED ||
+               new_state == TASK_STATE_TERMINATED ||
+               new_state == TASK_STATE_READY;
+    case TASK_STATE_RUNNING:
+        return new_state == TASK_STATE_READY ||
+               new_state == TASK_STATE_BLOCKED ||
+               new_state == TASK_STATE_TERMINATED;
+    case TASK_STATE_BLOCKED:
+        return new_state == TASK_STATE_READY ||
+               new_state == TASK_STATE_TERMINATED ||
+               new_state == TASK_STATE_BLOCKED;
+    case TASK_STATE_TERMINATED:
+        return new_state == TASK_STATE_INVALID ||
+               new_state == TASK_STATE_TERMINATED;
+    default:
+        return 0;
+    }
+}
+
 int task_set_state(uint32_t task_id, uint8_t new_state) {
     task_t *task = find_task_by_id(task_id);
     if (!task || task->state == TASK_STATE_INVALID) {
@@ -420,6 +455,17 @@ int task_set_state(uint32_t task_id, uint8_t new_state) {
     }
 
     uint8_t old_state = task->state;
+
+    if (!task_state_transition_allowed(old_state, new_state)) {
+        kprint("task_set_state: invalid transition for task ");
+        kprint_decimal(task_id);
+        kprint(" (");
+        kprint(task_state_to_string(old_state));
+        kprint(" -> ");
+        kprint(task_state_to_string(new_state));
+        kprint(")\n");
+    }
+
     task->state = new_state;
 
     kprint("Task ");
@@ -443,10 +489,6 @@ int task_set_state(uint32_t task_id, uint8_t new_state) {
 int init_task_manager(void) {
     task_manager.num_tasks = 0;
     task_manager.next_task_id = 1;
-    task_manager.current_task = NULL;
-    task_manager.idle_task = NULL;
-    task_manager.ready_queue_head = NULL;
-    task_manager.ready_queue_tail = NULL;
     task_manager.total_context_switches = 0;
     task_manager.total_yields = 0;
     task_manager.tasks_created = 0;
@@ -457,12 +499,11 @@ int init_task_manager(void) {
         task_manager.tasks[i].task_id = INVALID_TASK_ID;
         task_manager.tasks[i].state = TASK_STATE_INVALID;
         task_manager.tasks[i].process_id = INVALID_PROCESS_ID;
-        task_manager.tasks[i].next = NULL;
-        task_manager.tasks[i].prev = NULL;
         task_manager.tasks[i].total_runtime = 0;
         task_manager.tasks[i].yield_count = 0;
         task_manager.tasks[i].last_run_timestamp = 0;
         task_manager.tasks[i].waiting_on_task_id = INVALID_TASK_ID;
+        task_manager.tasks[i].time_slice_remaining = 0;
     }
 
     return 0;
@@ -566,8 +607,9 @@ void task_iterate_active(task_iterate_cb callback, void *context) {
  * Get current task ID
  */
 uint32_t task_get_current_id(void) {
-    if (task_manager.current_task) {
-        return task_manager.current_task->task_id;
+    task_t *current = scheduler_get_current_task();
+    if (current) {
+        return current->task_id;
     }
     return 0;  /* Kernel/no task */
 }
@@ -576,15 +618,47 @@ uint32_t task_get_current_id(void) {
  * Get current task structure
  */
 task_t *task_get_current(void) {
-    return task_manager.current_task;
+    return scheduler_get_current_task();
 }
 
 /*
  * Set current task (used by scheduler)
  */
 void task_set_current(task_t *task) {
-    task_manager.current_task = task;
-    if (task) {
-        task->state = TASK_STATE_RUNNING;
+    if (!task) {
+        return;
     }
+
+    if (task->state != TASK_STATE_READY && task->state != TASK_STATE_RUNNING) {
+        kprint("task_set_current: unexpected state transition for task ");
+        kprint_decimal(task->task_id);
+        kprint(" (state ");
+        kprint_decimal(task->state);
+        kprint(")\n");
+    }
+
+    task->state = TASK_STATE_RUNNING;
+}
+
+uint8_t task_get_state(const task_t *task) {
+    if (!task) {
+        return TASK_STATE_INVALID;
+    }
+    return task->state;
+}
+
+bool task_is_ready(const task_t *task) {
+    return task_get_state(task) == TASK_STATE_READY;
+}
+
+bool task_is_running(const task_t *task) {
+    return task_get_state(task) == TASK_STATE_RUNNING;
+}
+
+bool task_is_blocked(const task_t *task) {
+    return task_get_state(task) == TASK_STATE_BLOCKED;
+}
+
+bool task_is_terminated(const task_t *task) {
+    return task_get_state(task) == TASK_STATE_TERMINATED;
 }
