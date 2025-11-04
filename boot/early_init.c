@@ -70,18 +70,22 @@ static void early_debug_string(const char *str) {
  */
 static void initialize_kernel_subsystems(void) {
     early_debug_string("SlopOS: Initializing remaining kernel subsystems\n");
+    extern int splash_report_progress(int progress, const char *message);
 
     // Initialize debug subsystem first
+    splash_report_progress(20, "Initializing debug...");
     debug_init();
     early_debug_string("SlopOS: Debug subsystem initialized\n");
 
     // Set up GDT and TSS before enabling interrupts
     early_debug_string("SlopOS: Initializing GDT/TSS...\n");
+    splash_report_progress(30, "Setting up GDT/TSS...");
     gdt_init();
     early_debug_string("SlopOS: GDT/TSS initialized\n");
 
     // Initialize IDT FIRST - critical for debugging any issues that follow
     early_debug_string("SlopOS: Initializing IDT...\n");
+    splash_report_progress(40, "Setting up interrupts...");
     idt_init();
 
     // Configure dedicated IST stacks for critical exceptions
@@ -94,10 +98,12 @@ static void initialize_kernel_subsystems(void) {
 
     // Initialize PIC for interrupt control
     early_debug_string("SlopOS: Initializing PIC...\n");
+    splash_report_progress(50, "Initializing PIC...");
     pic_init();
     early_debug_string("SlopOS: PIC initialized - interrupt control ready\n");
 
     early_debug_string("SlopOS: Configuring IRQ dispatcher...\n");
+    splash_report_progress(55, "Setting up IRQ dispatcher...");
     irq_init();
     early_debug_string("SlopOS: IRQ dispatcher ready\n");
 
@@ -112,8 +118,10 @@ static void initialize_kernel_subsystems(void) {
 
     // Detect and initialize APIC now that memory management is available
     early_debug_string("SlopOS: Detecting Local APIC...\n");
+    splash_report_progress(60, "Detecting APIC...");
     if (apic_detect()) {
         early_debug_string("SlopOS: Initializing Local APIC...\n");
+        splash_report_progress(65, "Initializing APIC...");
         if (apic_init() == 0) {
             early_debug_string("SlopOS: Local APIC initialized, masking legacy PIC\n");
             disable_pic();
@@ -125,6 +133,7 @@ static void initialize_kernel_subsystems(void) {
     }
 
     early_debug_string("SlopOS: Enumerating PCI devices...\n");
+    splash_report_progress(70, "Enumerating PCI devices...");
     if (pci_init() == 0) {
         early_debug_string("SlopOS: PCI subsystem initialized\n");
         const pci_gpu_info_t *gpu = pci_get_primary_gpu();
@@ -167,6 +176,7 @@ static void initialize_kernel_subsystems(void) {
 
     if (test_config.enabled) {
         early_debug_string("SlopOS: Running interrupt test framework...\n");
+        splash_report_progress(75, "Running interrupt tests...");
 
         kprint("INTERRUPT_TEST: Suites -> ");
         kprintln(interrupt_test_suite_string(test_config.suite_mask));
@@ -291,59 +301,69 @@ current_location:
     extern void framebuffer_clear(uint32_t color);
     extern int graphics_draw_rect_filled(int x, int y, int width, int height, uint32_t color);
     extern int graphics_draw_circle(int cx, int cy, int radius, uint32_t color);
+    extern int splash_show_boot_screen(void);
+    extern int splash_report_progress(int progress, const char *message);
+    extern int splash_finish(void);
 
     if (framebuffer_init() == 0) {
         kprintln("Framebuffer initialized successfully!");
 
-        // Clear screen to dark blue
-        framebuffer_clear(0x001122FF);
+        // Initialize splash screen
+        splash_show_boot_screen();
+        splash_report_progress(10, "Graphics initialized");
 
-        // Initialize console with white text on dark background
-        font_console_init(0xFFFFFFFF, 0x00000000);
-
-        // Large red rectangle at top-left
-        graphics_draw_rect_filled(20, 20, 300, 150, 0xFF0000FF);
-        
-        // Large green rectangle at top-right
-        graphics_draw_rect_filled(700, 20, 300, 150, 0x00FF00FF);
-        
-        // Large yellow circle in center
-        graphics_draw_circle(512, 384, 100, 0xFFFF00FF);
-        
-        // White border around entire screen
-        graphics_draw_rect_filled(0, 0, 1024, 4, 0xFFFFFFFF);      // Top
-        graphics_draw_rect_filled(0, 764, 1024, 4, 0xFFFFFFFF);    // Bottom
-        graphics_draw_rect_filled(0, 0, 4, 768, 0xFFFFFFFF);       // Left
-        graphics_draw_rect_filled(1020, 0, 4, 768, 0xFFFFFFFF);    // Right
-
-        // Display large welcome message using font_draw_string
-        extern int font_draw_string(int x, int y, const char *str, uint32_t fg_color, uint32_t bg_color);
-        font_draw_string(20, 600, "*** SLOPOS GRAPHICS SYSTEM OPERATIONAL ***", 0xFFFFFFFF, 0x00000000);
-        font_draw_string(20, 616, "Framebuffer: WORKING | Resolution: 1024x768", 0xFFFFFFFF, 0x00000000);
-        font_draw_string(20, 632, "Memory: OK | Graphics: OK | Text: OK", 0xFFFFFFFF, 0x00000000);
-
-        kprintln("Graphics system test complete - visual output should be visible!");
+        // Graphics demo will be shown after splash screen completes
+        // (The splash screen will remain visible during kernel initialization)
     } else {
         kprintln("WARNING: Framebuffer initialization failed - no graphics available");
     }
 
     // Initialize scheduler subsystem (with SIMD-disabled compiler flags)
     kprintln("Initializing scheduler subsystem...");
+    splash_report_progress(85, "Initializing scheduler...");
     extern int init_task_manager(void);
     extern int init_scheduler(void);
-    
+
     if (init_task_manager() != 0) {
         kprintln("ERROR: Task manager initialization failed");
     } else {
         kprintln("Task manager initialized successfully!");
     }
-    
+
+    splash_report_progress(90, "Starting task manager...");
     if (init_scheduler() != 0) {
         kprintln("ERROR: Scheduler initialization failed");
     } else {
         kprintln("Scheduler initialized successfully!");
     }
     
+    // Finish splash screen and show boot completion
+    splash_report_progress(95, "Boot complete");
+    splash_finish();
+
+    // Clear splash screen and show graphics demo
+    framebuffer_clear(0x001122FF);
+
+    // Initialize console with white text on dark background
+    font_console_init(0xFFFFFFFF, 0x00000000);
+
+    // Draw graphics demo
+    graphics_draw_rect_filled(20, 20, 300, 150, 0xFF0000FF);        // Red rectangle
+    graphics_draw_rect_filled(700, 20, 300, 150, 0x00FF00FF);       // Green rectangle
+    graphics_draw_circle(512, 384, 100, 0xFFFF00FF);                // Yellow circle
+
+    // White border around entire screen
+    graphics_draw_rect_filled(0, 0, 1024, 4, 0xFFFFFFFF);           // Top
+    graphics_draw_rect_filled(0, 764, 1024, 4, 0xFFFFFFFF);         // Bottom
+    graphics_draw_rect_filled(0, 0, 4, 768, 0xFFFFFFFF);            // Left
+    graphics_draw_rect_filled(1020, 0, 4, 768, 0xFFFFFFFF);         // Right
+
+    // Display welcome message using font_draw_string
+    extern int font_draw_string(int x, int y, const char *str, uint32_t fg_color, uint32_t bg_color);
+    font_draw_string(20, 600, "*** SLOPOS GRAPHICS SYSTEM OPERATIONAL ***", 0xFFFFFFFF, 0x00000000);
+    font_draw_string(20, 616, "Framebuffer: WORKING | Resolution: 1024x768", 0xFFFFFFFF, 0x00000000);
+    font_draw_string(20, 632, "Memory: OK | Graphics: OK | Text: OK", 0xFFFFFFFF, 0x00000000);
+
     kprintln("");
     kprintln("=== KERNEL BOOT SUCCESSFUL ===");
     kprintln("Operational subsystems:");
