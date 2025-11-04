@@ -17,6 +17,7 @@
 #include "../drivers/apic.h"
 #include "../drivers/irq.h"
 #include "../drivers/interrupt_test.h"
+#include "../drivers/pci.h"
 
 // Forward declarations for other modules
 extern void verify_cpu_state(void);
@@ -121,6 +122,34 @@ static void initialize_kernel_subsystems(void) {
         }
     } else {
         early_debug_string("SlopOS: Local APIC unavailable, continuing with PIC\n");
+    }
+
+    early_debug_string("SlopOS: Enumerating PCI devices...\n");
+    if (pci_init() == 0) {
+        early_debug_string("SlopOS: PCI subsystem initialized\n");
+        const pci_gpu_info_t *gpu = pci_get_primary_gpu();
+        if (gpu && gpu->present) {
+            kprint("PCI: Primary GPU detected (bus ");
+            kprint_dec(gpu->device.bus);
+            kprint(", device ");
+            kprint_dec(gpu->device.device);
+            kprint(", function ");
+            kprint_dec(gpu->device.function);
+            kprintln(")");
+            if (gpu->mmio_virt_base) {
+                kprint("PCI: GPU MMIO virtual base 0x");
+                kprint_hex((uint64_t)(uintptr_t)gpu->mmio_virt_base);
+                kprint(", size 0x");
+                kprint_hex(gpu->mmio_size);
+                kprintln("");
+            } else {
+                kprintln("PCI: WARNING GPU MMIO mapping unavailable");
+            }
+        } else {
+            kprintln("PCI: No GPU-class device discovered during enumeration");
+        }
+    } else {
+        kprintln("PCI: Initialization failed");
     }
 
     struct interrupt_test_config test_config;

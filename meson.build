@@ -108,6 +108,7 @@ lib_sources += files(
 drivers_dir = meson.current_source_dir() / 'drivers'
 drivers_sources += files(
   'drivers/serial.c',
+  'drivers/pci.c',
   'drivers/pic.c',
   'drivers/apic.c',
   'drivers/irq.c',
