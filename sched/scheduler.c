@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../boot/debug.h"
+#include "../boot/log.h"
 #include "../drivers/serial.h"
 #include "../mm/paging.h"
 #include "scheduler.h"
@@ -18,13 +19,6 @@ extern void simple_context_switch(void *old_context, void *new_context);
 
 /* Forward declarations from process_vm.c */
 extern process_page_dir_t *process_vm_get_page_dir(uint32_t process_id);
-
-/* Task states from task.c */
-#define TASK_STATE_INVALID            0
-#define TASK_STATE_READY              1
-#define TASK_STATE_RUNNING            2
-#define TASK_STATE_BLOCKED            3
-#define TASK_STATE_TERMINATED         4
 
 /* ========================================================================
  * SCHEDULER CONSTANTS
@@ -187,6 +181,15 @@ int schedule_task(task_t *task) {
         return -1;
     }
 
+    if (!task_is_ready(task)) {
+        kprint("schedule_task: task ");
+        kprint_decimal(task->task_id);
+        kprint(" not ready (state ");
+        kprint(task_state_to_string(task_get_state(task)));
+        kprint(")\n");
+        return -1;
+    }
+
     if (ready_queue_enqueue(&scheduler.ready_queue, task) != 0) {
         return -1;
     }
@@ -225,14 +228,8 @@ static task_t *select_next_task(void) {
     }
 
     /* If no tasks available, use idle task */
-    if (!next_task && scheduler.idle_task) {
-        /* Check if idle task is still active */
-        extern int task_get_info(uint32_t task_id, task_t **task_info);
-        task_t *idle_info;
-        if (task_get_info(scheduler.idle_task->task_id, &idle_info) == 0 &&
-            idle_info->state != TASK_STATE_TERMINATED) {
-            next_task = scheduler.idle_task;
-        }
+    if (!next_task && scheduler.idle_task && !task_is_terminated(scheduler.idle_task)) {
+        next_task = scheduler.idle_task;
     }
 
     return next_task;
@@ -295,14 +292,22 @@ void schedule(void) {
     /* Get current task and put it back in ready queue if still runnable */
     task_t *current = scheduler.current_task;
     if (current && current != scheduler.idle_task) {
-        /* Only re-queue if task is still ready to run */
-        task_t *task_info;
-        if (task_get_info(current->task_id, &task_info) == 0 &&
-            task_info->state == TASK_STATE_RUNNING) {
-
-            /* Mark as ready and add back to queue */
-            task_set_state(current->task_id, TASK_STATE_READY);
-            ready_queue_enqueue(&scheduler.ready_queue, current);
+        if (task_is_running(current)) {
+            if (task_set_state(current->task_id, TASK_STATE_READY) != 0) {
+                kprint("schedule: failed to mark task ");
+                kprint_decimal(current->task_id);
+                kprint(" ready\n");
+            } else if (ready_queue_enqueue(&scheduler.ready_queue, current) != 0) {
+                kprint("schedule: ready queue full when re-queuing task ");
+                kprint_decimal(current->task_id);
+                kprint("\n");
+            }
+        } else if (!task_is_blocked(current) && !task_is_terminated(current)) {
+            kprint("schedule: skipping requeue for task ");
+            kprint_decimal(current->task_id);
+            kprint(" in state ");
+            kprint(task_state_to_string(task_get_state(current)));
+            kprint("\n");
         }
     }
 
@@ -311,20 +316,15 @@ void schedule(void) {
     if (!next_task) {
         /* No tasks to run - check if we should exit scheduler */
         /* For testing purposes, if idle task has terminated, exit scheduler */
-        if (scheduler.idle_task) {
-            extern int task_get_info(uint32_t task_id, task_t **task_info);
-            task_t *idle_info;
-            if (task_get_info(scheduler.idle_task->task_id, &idle_info) == 0 &&
-                idle_info->state == TASK_STATE_TERMINATED) {
-                /* Idle task terminated - exit scheduler by switching to return context */
-                scheduler.enabled = 0;
-                /* Switch back to the saved return context */
-                if (scheduler.current_task) {
-                    context_switch(&scheduler.current_task->context, &scheduler.return_context);
-                } else {
-                    /* No current task - this shouldn't happen */
-                    return;
-                }
+        if (scheduler.idle_task && task_is_terminated(scheduler.idle_task)) {
+            /* Idle task terminated - exit scheduler by switching to return context */
+            scheduler.enabled = 0;
+            /* Switch back to the saved return context */
+            if (scheduler.current_task) {
+                context_switch(&scheduler.current_task->context, &scheduler.return_context);
+            } else {
+                /* No current task - this shouldn't happen */
+                return;
             }
         }
         /* No tasks available but idle task still exists - shouldn't happen */
@@ -360,7 +360,11 @@ void block_current_task(void) {
     }
 
     /* Mark task as blocked */
-    task_set_state(current->task_id, TASK_STATE_BLOCKED);
+    if (task_set_state(current->task_id, TASK_STATE_BLOCKED) != 0) {
+        kprint("block_current_task: invalid state transition for task ");
+        kprint_decimal(current->task_id);
+        kprint("\n");
+    }
 
     /* Remove from ready queue and schedule next task */
     unschedule_task(current);
@@ -404,7 +408,11 @@ int unblock_task(task_t *task) {
     }
 
     /* Mark task as ready */
-    task_set_state(task->task_id, TASK_STATE_READY);
+    if (task_set_state(task->task_id, TASK_STATE_READY) != 0) {
+        kprint("unblock_task: invalid state transition for task ");
+        kprint_decimal(task->task_id);
+        kprint("\n");
+    }
 
     /* Add back to ready queue */
     return schedule_task(task);
