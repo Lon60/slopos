@@ -162,7 +162,8 @@ boot: iso-notests
 	  -serial stdio \
 	  -monitor none \
 	  $$DISPLAY_ARGS \
-	  $$EXTRA_ARGS
+	  $$EXTRA_ARGS \
+	  $${QEMU_PCI_DEVICES:-}
 
 boot-log: iso-notests
 	@set -e; \
@@ -199,6 +200,7 @@ boot-log: iso-notests
 	  -monitor none \
 	  $$DISPLAY_ARGS \
 	  $$EXTRA_ARGS \
+	  $${QEMU_PCI_DEVICES:-} \
 	  2>&1 | tee "$(LOG_FILE)"; \
 	status=$$?; \
 	set -e; \

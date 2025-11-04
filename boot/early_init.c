@@ -27,6 +27,7 @@
 #include "../video/framebuffer.h"
 #include "../video/graphics.h"
 #include "../video/font.h"
+#include "../drivers/pci.h"
 #include <string.h>
 
 // Forward declarations for other modules
@@ -420,6 +421,39 @@ static int boot_step_apic_setup(void) {
     return 0;
 }
 
+static int boot_step_pci_init(void) {
+    boot_debug("Enumerating PCI devices...");
+    if (pci_init() == 0) {
+        boot_debug("PCI subsystem initialized");
+        const pci_gpu_info_t *gpu = pci_get_primary_gpu();
+        if (gpu && gpu->present) {
+            BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+                kprint("PCI: Primary GPU detected (bus ");
+                kprint_dec(gpu->device.bus);
+                kprint(", device ");
+                kprint_dec(gpu->device.device);
+                kprint(", function ");
+                kprint_dec(gpu->device.function);
+                kprintln(")");
+                if (gpu->mmio_virt_base) {
+                    kprint("PCI: GPU MMIO virtual base 0x");
+                    kprint_hex((uint64_t)(uintptr_t)gpu->mmio_virt_base);
+                    kprint(", size 0x");
+                    kprint_hex(gpu->mmio_size);
+                    kprintln("");
+                } else {
+                    kprintln("PCI: WARNING GPU MMIO mapping unavailable");
+                }
+            });
+        } else {
+            boot_debug("PCI: No GPU-class device discovered during enumeration");
+        }
+    } else {
+        boot_info("WARNING: PCI initialization failed");
+    }
+    return 0;
+}
+
 static int boot_step_interrupt_tests(void) {
     struct interrupt_test_config test_config;
     interrupt_test_config_init_defaults(&test_config);
@@ -455,8 +489,8 @@ static int boot_step_interrupt_tests(void) {
 
     interrupt_test_init(&test_config);
     int passed = run_all_interrupt_tests(&test_config);
-    struct test_stats *stats = test_get_stats();
-    int failed_tests = stats ? stats->failed_tests : 0;
+    const struct test_stats *stats = test_get_stats();
+    uint32_t failed_tests = stats ? stats->core.failed_cases : 0;
     interrupt_test_cleanup();
 
     if (boot_log_is_enabled(BOOT_LOG_LEVEL_DEBUG)) {
@@ -467,7 +501,7 @@ static int boot_step_interrupt_tests(void) {
 
     if (test_config.shutdown_on_complete) {
         boot_debug("INTERRUPT_TEST: Auto shutdown enabled after harness");
-        interrupt_test_request_shutdown(failed_tests);
+        interrupt_test_request_shutdown((int)failed_tests);
     }
 
     if (failed_tests > 0) {
@@ -485,6 +519,7 @@ BOOT_INIT_STEP(drivers, "pic", boot_step_pic_setup);
 BOOT_INIT_STEP(drivers, "irq dispatcher", boot_step_irq_setup);
 BOOT_INIT_STEP(drivers, "timer", boot_step_timer_setup);
 BOOT_INIT_STEP(drivers, "apic", boot_step_apic_setup);
+BOOT_INIT_STEP(drivers, "pci", boot_step_pci_init);
 BOOT_INIT_STEP(drivers, "interrupt tests", boot_step_interrupt_tests);
 
 /* Services phase --------------------------------------------------------- */

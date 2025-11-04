@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../boot/idt.h"
+#include "../lib/unit_test.h"
 #include "interrupt_test_config.h"
 
 // Test result codes
@@ -28,11 +29,9 @@
 
 // Test statistics
 struct test_stats {
-    int total_tests;
-    int passed_tests;
-    int failed_tests;
-    int exceptions_caught;
-    int unexpected_exceptions;
+    struct unit_test_stats core;
+    uint32_t exceptions_caught;
+    uint32_t unexpected_exceptions;
     uint32_t elapsed_ms;
     int timed_out;
 };
@@ -93,7 +92,7 @@ int test_is_exception_expected(void);
 void test_set_resume_point(void *rip);
 void test_clear_resume_point(void);
 void test_report_results(void);
-struct test_stats *test_get_stats(void);
+const struct test_stats *test_get_stats(void);
 void interrupt_test_request_shutdown(int failed_tests);
 
 // Exception handler for tests

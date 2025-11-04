@@ -10,6 +10,7 @@
 #include "../boot/limine_protocol.h"
 #include "memory_layout.h"
 #include "memory_reservations.h"
+#include "paging.h"
 #include "phys_virt.h"
 
 static uint64_t cached_identity_limit;
@@ -19,7 +20,6 @@ static uint64_t kernel_virt_start;
 static int translation_initialized;
 
 void *memset(void *dest, int value, size_t n);
-extern uint64_t virt_to_phys(uint64_t virt_addr);
 
 void mm_init_phys_virt_helpers(void) {
     const kernel_memory_layout_t *layout = get_kernel_memory_layout();
@@ -97,3 +97,33 @@ int mm_zero_physical_page(uint64_t phys_addr) {
     return 0;
 }
 
+void *mm_map_mmio_region(uint64_t phys_addr, size_t size) {
+    if (phys_addr == 0 || size == 0) {
+        return NULL;
+    }
+
+    uint64_t end_addr = phys_addr + (uint64_t)size - 1;
+    if (end_addr < phys_addr) {
+        kprintln("MM: mm_map_mmio_region overflow detected");
+        return NULL;
+    }
+
+    if (is_hhdm_available()) {
+        uint64_t hhdm_offset = get_hhdm_offset();
+        return (void *)(phys_addr + hhdm_offset);
+    }
+
+    if (translation_initialized && phys_addr < cached_identity_limit) {
+        return (void *)(uintptr_t)phys_addr;
+    }
+
+    kprintln("MM: mm_map_mmio_region requires explicit paging support (unavailable)");
+    return NULL;
+}
+
+int mm_unmap_mmio_region(void *virt_addr, size_t size) {
+    (void)virt_addr;
+    (void)size;
+    /* HHDM mappings are static; nothing to do yet. */
+    return 0;
+}

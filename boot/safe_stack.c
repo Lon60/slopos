@@ -10,14 +10,12 @@
 #include "log.h"
 
 #include "../drivers/serial.h"
+#include "../mm/page_alloc.h"
+#include "../mm/paging.h"
 #include "../mm/phys_virt.h"
 
 #include <stdint.h>
 #include <stddef.h>
-
-/* External low-level memory interfaces */
-uint64_t alloc_page_frame(uint32_t flags);
-int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
 
 extern void kernel_panic(const char *message);
 

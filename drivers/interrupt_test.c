@@ -10,23 +10,23 @@
 #include "../boot/constants.h"
 #include "../boot/shutdown.h"
 #include "../mm/kernel_heap.h"
+#include "../mm/paging.h"
 #include "../mm/phys_virt.h"
 #include <stddef.h>
 #include <stdint.h>
 
-/* External paging helpers */
-extern int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
-extern int unmap_page(uint64_t vaddr);
-
 // Global test state
 static struct test_context test_ctx = {0};
 static struct test_stats test_statistics = {0};
+static struct unit_test_runner interrupt_test_runner = {0};
 static uint32_t test_flags = 0;
 static struct interrupt_test_config active_config = {
     .enabled = 0,
     .verbosity = INTERRUPT_TEST_VERBOSITY_SUMMARY,
     .suite_mask = INTERRUPT_TEST_SUITE_ALL,
     .timeout_ms = 0,
+    .shutdown_on_complete = 0,
+    .stacktrace_demo = 0,
 };
 static uint64_t estimated_cycles_per_ms = 0;
 static uint64_t test_timeout_cycles = 0;
@@ -352,10 +352,9 @@ void interrupt_test_init(const struct interrupt_test_config *config) {
     test_ctx.context_corrupted = 0;
     test_ctx.last_recovery_reason = TEST_RECOVERY_NONE;
 
-    // Clear statistics
-    test_statistics.total_tests = 0;
-    test_statistics.passed_tests = 0;
-    test_statistics.failed_tests = 0;
+    unit_test_runner_init(&interrupt_test_runner,
+                          "Interrupt Harness",
+                          &test_statistics.core);
     test_statistics.exceptions_caught = 0;
     test_statistics.unexpected_exceptions = 0;
     test_statistics.elapsed_ms = 0;
@@ -430,7 +429,7 @@ void test_start(const char *name, int expected_exception) {
     }
     test_ctx.test_name[i] = '\0';
 
-    test_statistics.total_tests++;
+    unit_test_runner_begin_case(&interrupt_test_runner, test_ctx.test_name);
 
     if (test_flags & TEST_FLAG_VERBOSE) {
         kprint("INTERRUPT_TEST: Starting test '");
@@ -458,29 +457,23 @@ int test_end(void) {
 
     if (recovery_failure) {
         result = TEST_FAILED;
-        test_statistics.failed_tests++;
         if (!exception_seen || expected_vector < 0 || !vector_matches) {
             test_statistics.unexpected_exceptions++;
         }
     } else if (expected_vector >= 0) {
         if (exception_seen && vector_matches) {
             result = TEST_EXCEPTION_CAUGHT;
-            test_statistics.passed_tests++;
         } else if (!exception_seen) {
             result = TEST_NO_EXCEPTION;
-            test_statistics.failed_tests++;
         } else {
             result = TEST_WRONG_EXCEPTION;
-            test_statistics.failed_tests++;
         }
     } else {
         if (exception_seen) {
             result = TEST_FAILED;
-            test_statistics.failed_tests++;
             test_statistics.unexpected_exceptions++;
         } else {
             result = TEST_SUCCESS;
-            test_statistics.passed_tests++;
         }
     }
 
@@ -504,6 +497,13 @@ int test_end(void) {
         }
         kprintln("");
     }
+
+    enum unit_test_status status = UNIT_TEST_STATUS_FAIL;
+    if (result == TEST_SUCCESS || result == TEST_EXCEPTION_CAUGHT) {
+        status = UNIT_TEST_STATUS_PASS;
+    }
+
+    unit_test_runner_finish_case(&interrupt_test_runner, status);
 
     test_ctx.test_active = 0;
     test_ctx.resume_rip = 0;
@@ -1017,6 +1017,15 @@ resume_point:
 }
 
 /*
+ * Demo helper: trigger divide-by-zero without announcing expectation
+ * Used to exercise stack trace reporting on unexpected failures
+ */
+__attribute__((noinline)) static int test_stacktrace_demo_fault(void) {
+    kprintln("INTERRUPT_TEST: Stacktrace demo triggering divide-by-zero");
+    return test_divide_by_zero();
+}
+
+/*
  * Test: Invalid opcode  
  */
 __attribute__((noinline)) int test_invalid_opcode(void) {
@@ -1384,6 +1393,24 @@ int run_all_interrupt_tests(const struct interrupt_test_config *config) {
         }
     }
 
+    if (active_config.stacktrace_demo) {
+        if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+            kprintln("INTERRUPT_TEST: Running stacktrace demonstration");
+        }
+        safe_execute_test(test_stacktrace_demo_fault,
+                          "stacktrace_demo_unexpected_divide",
+                          -1);
+        end_cycles = read_tsc();
+        if (test_timeout_cycles != 0 &&
+            (end_cycles - start_cycles) > test_timeout_cycles) {
+            timed_out = 1;
+            if (active_config.verbosity != INTERRUPT_TEST_VERBOSITY_QUIET) {
+                kprintln("INTERRUPT_TEST: Timeout reached during stacktrace demo");
+            }
+            goto finish_execution;
+        }
+    }
+
 finish_execution:
     if (test_flags & TEST_FLAG_VERBOSE) {
         kprint("INTERRUPT_TEST: Aggregate passed tests: ");
@@ -1434,17 +1461,19 @@ void test_clear_resume_point(void) {
  * Report test results
  */
 void test_report_results(void) {
+    unit_test_runner_report(&interrupt_test_runner);
+
     kprintln("=== INTERRUPT TEST RESULTS ===");
     kprint("Total tests: ");
-    kprint_dec(test_statistics.total_tests);
+    kprint_dec(test_statistics.core.total_cases);
     kprintln("");
 
     kprint("Passed: ");
-    kprint_dec(test_statistics.passed_tests);
+    kprint_dec(test_statistics.core.passed_cases);
     kprintln("");
 
     kprint("Failed: ");
-    kprint_dec(test_statistics.failed_tests);
+    kprint_dec(test_statistics.core.failed_cases);
     kprintln("");
 
     kprint("Exceptions caught: ");
@@ -1455,8 +1484,9 @@ void test_report_results(void) {
     kprint_dec(test_statistics.unexpected_exceptions);
     kprintln("");
 
-    if (test_statistics.total_tests > 0) {
-        int success_rate = (test_statistics.passed_tests * 100) / test_statistics.total_tests;
+    if (test_statistics.core.total_cases > 0) {
+        int success_rate = (int)((test_statistics.core.passed_cases * 100) /
+                                 test_statistics.core.total_cases);
         kprint("Success rate: ");
         kprint_dec(success_rate);
         kprintln("%");
@@ -1489,7 +1519,7 @@ void interrupt_test_request_shutdown(int failed_tests) {
 /*
  * Get test statistics
  */
-struct test_stats *test_get_stats(void) {
+const struct test_stats *test_get_stats(void) {
     return &test_statistics;
 }
 

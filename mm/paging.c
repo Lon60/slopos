@@ -9,15 +9,12 @@
 #include "../drivers/serial.h"
 #include "../boot/log.h"
 #include "paging.h"
+#include "page_alloc.h"
 #include "../boot/limine_protocol.h"
-#include "phys_virt.h"
 #include "phys_virt.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
-uint64_t alloc_page_frame(uint32_t flags);
-int free_page_frame(uint64_t phys_addr);
-
 /* ========================================================================
  * PAGE TABLE CONSTANTS - Using boot/constants.h definitions
  * ======================================================================== */

@@ -9,6 +9,7 @@
 #include "../boot/constants.h"
 #include "../boot/log.h"
 #include "../drivers/serial.h"
+#include "page_alloc.h"
 #include "phys_virt.h"
 
 /* Forward declarations */
@@ -112,6 +113,7 @@ static inline page_frame_t *get_frame_desc(uint32_t frame_num) {
 static void add_to_free_list(uint32_t frame_num);
 #if defined(PAGE_ALLOC_DEBUG)
 static void page_alloc_debug_self_test(void);
+static uint64_t alloc_page_frames(uint32_t count, uint32_t flags);
 #endif
 static int frame_satisfies_flags(uint32_t frame_num, uint32_t flags);
 static int unlink_frame_from_free_list(uint32_t frame_num);
@@ -421,11 +423,12 @@ uint64_t alloc_page_frame(uint32_t flags) {
     return phys_addr;
 }
 
+#if defined(PAGE_ALLOC_DEBUG)
 /*
  * Allocate multiple contiguous physical page frames
  * Returns physical address of first page, 0 on failure
  */
-uint64_t alloc_page_frames(uint32_t count, uint32_t flags) {
+static uint64_t alloc_page_frames(uint32_t count, uint32_t flags) {
     if (count == 0) {
         return 0;
     }
@@ -489,6 +492,7 @@ uint64_t alloc_page_frames(uint32_t count, uint32_t flags) {
     page_alloc_log_contiguous(start_phys, count);
     return start_phys;
 }
+#endif /* PAGE_ALLOC_DEBUG */
 
 /*
  * Free a physical page frame
@@ -609,14 +613,16 @@ int add_page_alloc_region(uint64_t start_addr, uint64_t size, uint8_t type) {
  * Initialize the physical page frame allocator
  * Must be called after EFI memory map is parsed
  */
-int init_page_allocator(page_frame_t *frame_array, uint32_t max_frames) {
-    if (!frame_array || max_frames == 0) {
+int init_page_allocator(void *frame_array, uint32_t max_frames) {
+    page_frame_t *frames = (page_frame_t *)frame_array;
+
+    if (!frames || max_frames == 0) {
         kernel_panic("init_page_allocator: Invalid parameters");
     }
 
     boot_log_debug("Initializing page frame allocator");
 
-    page_allocator.frames = frame_array;
+    page_allocator.frames = frames;
     page_allocator.total_frames = max_frames;
     page_allocator.free_frames = 0;
     page_allocator.allocated_frames = 0;
@@ -626,11 +632,11 @@ int init_page_allocator(page_frame_t *frame_array, uint32_t max_frames) {
 
     /* Initialize all frame descriptors */
     for (uint32_t i = 0; i < max_frames; i++) {
-        page_allocator.frames[i].ref_count = 0;
-        page_allocator.frames[i].state = PAGE_FRAME_RESERVED;
-        page_allocator.frames[i].flags = 0;
-        page_allocator.frames[i].order = 0;
-        page_allocator.frames[i].next_free = INVALID_PAGE_FRAME;
+        frames[i].ref_count = 0;
+        frames[i].state = PAGE_FRAME_RESERVED;
+        frames[i].flags = 0;
+        frames[i].order = 0;
+        frames[i].next_free = INVALID_PAGE_FRAME;
     }
 
     BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {

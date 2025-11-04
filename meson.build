@@ -100,20 +100,24 @@ video_dir = meson.current_source_dir() / 'video'
 video_sources += files(
   'video/framebuffer.c',
   'video/graphics.c',
-  'video/font.c'
+  'video/font.c',
+  'video/splash.c'
 )
 
 # Lib directory - utility functions
 lib_dir = meson.current_source_dir() / 'lib'
 lib_sources += files(
   'lib/memory.c',
-  'lib/string.c'
+  'lib/string.c',
+  'lib/unit_test.c',
+  'lib/stacktrace.c'
 )
 
 # Drivers directory
 drivers_dir = meson.current_source_dir() / 'drivers'
 drivers_sources += files(
   'drivers/serial.c',
+  'drivers/pci.c',
   'drivers/pic.c',
   'drivers/pit.c',
   'drivers/apic.c',
@@ -130,6 +134,7 @@ drivers_sources += files(
 sched_dir = meson.current_source_dir() / 'sched'
 sched_sources += files(
   'sched/scheduler.c',
+  'sched/kthread.c',
   'sched/task.c',
   'sched/test_tasks.c',
   'sched/context_switch.s'

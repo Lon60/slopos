@@ -272,6 +272,18 @@ static void process_token(struct interrupt_test_config *config,
         config->shutdown_on_complete = parse_on_off_flag(value, config->shutdown_on_complete);
         return;
     }
+
+    if (string_equals_n_ci(token, "itests.stacktrace_demo=", 23)) {
+        value = token + 23;
+        config->stacktrace_demo = parse_on_off_flag(value, config->stacktrace_demo);
+        return;
+    }
+
+    if (string_equals_n_ci(token, "interrupt_tests.stacktrace_demo=", 32)) {
+        value = token + 32;
+        config->stacktrace_demo = parse_on_off_flag(value, config->stacktrace_demo);
+        return;
+    }
 }
 
 void interrupt_test_config_init_defaults(struct interrupt_test_config *config) {
@@ -284,6 +296,7 @@ void interrupt_test_config_init_defaults(struct interrupt_test_config *config) {
     config->verbosity = verbosity_from_string(INTERRUPT_TESTS_DEFAULT_VERBOSITY);
     config->suite_mask = suite_from_string(INTERRUPT_TESTS_DEFAULT_SUITE);
     config->shutdown_on_complete = INTERRUPT_TESTS_DEFAULT_SHUTDOWN ? 1 : 0;
+    config->stacktrace_demo = 0;
 }
 
 void interrupt_test_config_parse_cmdline(struct interrupt_test_config *config,

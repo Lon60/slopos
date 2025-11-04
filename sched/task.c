@@ -10,6 +10,7 @@
 #include "../boot/debug.h"
 #include "../boot/log.h"
 #include "../drivers/serial.h"
+#include "../mm/kernel_heap.h"
 #include "../mm/paging.h"
 #include "../mm/kernel_heap.h"
 #include "task.h"
@@ -22,6 +23,12 @@ extern void task_entry_wrapper(void);
 #define PROCESS_VM_FLAG_WRITE                 0x02
 #define PROCESS_VM_FLAG_EXEC                  0x04
 #define PROCESS_VM_FLAG_USER                  0x08
+
+static inline uint64_t read_cr3(void) {
+    uint64_t value;
+    __asm__ volatile ("movq %%cr3, %0" : "=r"(value));
+    return value;
+}
 
 /* Forward declarations */
 uint32_t create_process_vm(void);
@@ -181,21 +188,19 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
         return INVALID_TASK_ID;
     }
 
-    uint32_t process_id;
-    uint64_t stack_base;
+    uint32_t process_id = INVALID_PROCESS_ID;
+    uint64_t stack_base = 0;
 
     /* Handle kernel mode tasks differently from user mode tasks */
     if (flags & TASK_FLAG_KERNEL_MODE) {
         /* Kernel tasks use kernel page directory and kernel heap */
-        process_id = 0;  /* Kernel process ID */
-        
-        /* Allocate stack from kernel heap */
-        void *stack_ptr = kmalloc(TASK_STACK_SIZE);
-        if (!stack_ptr) {
+        void *stack = kmalloc(TASK_STACK_SIZE);
+        if (!stack) {
             kprint("task_create: Failed to allocate kernel stack\n");
             return INVALID_TASK_ID;
         }
-        stack_base = (uint64_t)stack_ptr;
+
+        stack_base = (uint64_t)stack;
     } else {
         /* User mode tasks get their own process VM space */
         process_id = create_process_vm();
@@ -253,19 +258,7 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     /* Record page directory for context switches */
     if (flags & TASK_FLAG_KERNEL_MODE) {
         /* Kernel tasks use kernel page directory */
-        extern process_page_dir_t *get_current_page_directory(void);
-        process_page_dir_t *kernel_page_dir = get_current_page_directory();
-        if (kernel_page_dir && kernel_page_dir->pml4_phys) {
-            task->context.cr3 = kernel_page_dir->pml4_phys;
-        } else {
-            /* Kernel page directory not yet initialized - this should not happen */
-            kprint("task_create: ERROR - Kernel page directory not initialized\n");
-            if (flags & TASK_FLAG_KERNEL_MODE) {
-                /* Free kernel stack on error */
-                kfree((void *)stack_base);
-            }
-            return INVALID_TASK_ID;
-        }
+        task->context.cr3 = read_cr3() & ~0xFFFULL;
     } else {
         /* User mode tasks use their process page directory */
         process_page_dir_t *page_dir = process_vm_get_page_dir(process_id);
@@ -336,6 +329,7 @@ int task_terminate(uint32_t task_id) {
     /* Wake any dependents waiting on this task */
     release_task_dependents(resolved_id);
 
+<<<<<<< HEAD
     /* Free resources based on task mode */
     if (task->flags & TASK_FLAG_KERNEL_MODE) {
         /* Kernel tasks: free stack from kernel heap */
@@ -348,6 +342,14 @@ int task_terminate(uint32_t task_id) {
             destroy_process_vm(task->process_id);
             destroy_process_vma_space(task->process_id);
         }
+=======
+    /* Free process VM space */
+    if (task->process_id != INVALID_PROCESS_ID) {
+        destroy_process_vm(task->process_id);
+        destroy_process_vma_space(task->process_id);
+    } else if (task->stack_base) {
+        kfree((void *)task->stack_base);
+>>>>>>> upstream/master
     }
 
     /* Clear task control block */
