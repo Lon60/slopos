@@ -6,8 +6,10 @@
 #include <stddef.h>
 
 #include "../drivers/serial.h"
+#include "../boot/log.h"
 #include "../boot/limine_protocol.h"
 #include "memory_layout.h"
+#include "memory_reservations.h"
 #include "phys_virt.h"
 
 static uint64_t cached_identity_limit;
@@ -40,6 +42,18 @@ void mm_init_phys_virt_helpers(void) {
 
 uint64_t mm_phys_to_virt(uint64_t phys_addr) {
     if (phys_addr == 0) {
+        return 0;
+    }
+
+    const mm_reserved_region_t *reservation = mm_reservations_find(phys_addr);
+    if (reservation && (reservation->flags & MM_RESERVATION_FLAG_ALLOW_MM_PHYS_TO_VIRT) == 0) {
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
+            kprint("mm_phys_to_virt: rejected reserved phys 0x");
+            kprint_hex(phys_addr);
+            kprint(" (");
+            kprint(mm_reservation_type_name(reservation->type));
+            kprint(")\n");
+        });
         return 0;
     }
 

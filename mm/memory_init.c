@@ -8,8 +8,11 @@
 #include <stddef.h>
 #include "../boot/constants.h"
 #include "../boot/log.h"
+#include "../boot/limine_protocol.h"
+#include "../drivers/apic.h"
 #include "../drivers/serial.h"
 #include "../third_party/limine/limine.h"
+#include "memory_reservations.h"
 #include "phys_virt.h"
 
 /* Descriptor sizing helpers from allocator implementations */
@@ -70,7 +73,9 @@ typedef struct memory_init_state {
     int paging_done;
     uint64_t total_memory_bytes;
     uint64_t available_memory_bytes;
+    uint64_t reserved_device_bytes;
     uint32_t memory_regions_count;
+    uint32_t reserved_region_count;
     uint64_t hhdm_offset;
     uint32_t tracked_page_frames;
     uint32_t tracked_buddy_blocks;
@@ -79,6 +84,260 @@ typedef struct memory_init_state {
 
 static memory_init_state_t init_state = {0};
 static allocator_buffer_plan_t allocator_buffers = {0};
+
+/* ========================================================================
+ * DEVICE MEMORY RESERVATIONS
+ * ======================================================================== */
+
+static void record_allocator_metadata_reservation(void) {
+    if (!allocator_buffers.prepared || allocator_buffers.reserved_phys_size == 0) {
+        return;
+    }
+
+    mm_reservations_add(allocator_buffers.reserved_phys_base,
+                        allocator_buffers.reserved_phys_size,
+                        MM_RESERVATION_ALLOCATOR_METADATA,
+                        MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS,
+                        "Allocator metadata");
+}
+
+static void record_memmap_reservations(const struct limine_memmap_response *memmap) {
+    if (!memmap || memmap->entry_count == 0 || !memmap->entries) {
+        return;
+    }
+
+    for (uint64_t i = 0; i < memmap->entry_count; i++) {
+        const struct limine_memmap_entry *entry = memmap->entries[i];
+        if (!entry || entry->length == 0) {
+            continue;
+        }
+
+        switch (entry->type) {
+            case LIMINE_MEMMAP_ACPI_RECLAIMABLE:
+                mm_reservations_add(entry->base, entry->length,
+                                    MM_RESERVATION_ACPI_RECLAIMABLE,
+                                    MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS,
+                                    "ACPI reclaimable");
+                break;
+            case LIMINE_MEMMAP_ACPI_NVS:
+                mm_reservations_add(entry->base, entry->length,
+                                    MM_RESERVATION_ACPI_NVS,
+                                    MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS,
+                                    "ACPI NVS");
+                break;
+            case LIMINE_MEMMAP_FRAMEBUFFER:
+                mm_reservations_add(entry->base, entry->length,
+                                    MM_RESERVATION_FRAMEBUFFER,
+                                    MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS |
+                                    MM_RESERVATION_FLAG_ALLOW_MM_PHYS_TO_VIRT |
+                                    MM_RESERVATION_FLAG_MMIO,
+                                    "Framebuffer");
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+static void record_framebuffer_reservation(void) {
+    uint64_t fb_addr = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t pitch = 0;
+    uint8_t bpp = 0;
+
+    if (!get_framebuffer_info(&fb_addr, &width, &height, &pitch, &bpp)) {
+        return;
+    }
+
+    uint64_t phys_base = fb_addr;
+    if (is_hhdm_available()) {
+        uint64_t hhdm_offset = get_hhdm_offset();
+        if (phys_base >= hhdm_offset) {
+            phys_base -= hhdm_offset;
+        }
+    }
+
+    if (phys_base == 0 || pitch == 0 || height == 0) {
+        return;
+    }
+
+    uint64_t length = (uint64_t)pitch * (uint64_t)height;
+    if (length == 0) {
+        return;
+    }
+
+    mm_reservations_add(phys_base, length,
+                        MM_RESERVATION_FRAMEBUFFER,
+                        MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS |
+                        MM_RESERVATION_FLAG_ALLOW_MM_PHYS_TO_VIRT |
+                        MM_RESERVATION_FLAG_MMIO,
+                        "Framebuffer");
+}
+
+static void record_apic_reservation(void) {
+    uint32_t eax = 0;
+    uint32_t ebx = 0;
+    uint32_t ecx = 0;
+    uint32_t edx = 0;
+
+    cpuid(1, &eax, &ebx, &ecx, &edx);
+    if ((edx & CPUID_FEAT_EDX_APIC) == 0) {
+        return;
+    }
+
+    uint64_t apic_base_msr = read_msr(MSR_APIC_BASE);
+    uint64_t apic_phys = apic_base_msr & APIC_BASE_ADDR_MASK;
+
+    if (apic_phys == 0) {
+        return;
+    }
+
+    mm_reservations_add(apic_phys, 0x1000,
+                        MM_RESERVATION_APIC,
+                        MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS |
+                        MM_RESERVATION_FLAG_MMIO,
+                        "Local APIC");
+}
+
+static void log_reserved_regions(void) {
+    uint32_t count = mm_reservations_count();
+
+    if (count == 0) {
+        boot_log_info("MM: No device memory reservations detected");
+        return;
+    }
+
+    uint64_t total_bytes = mm_reservations_total_bytes(MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS);
+
+    BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+        kprint("MM: Reserved device regions (");
+        kprint_decimal(count);
+        kprint(")\n");
+        for (uint32_t i = 0; i < count; i++) {
+            const mm_reserved_region_t *region = mm_reservations_get(i);
+            if (!region) {
+                continue;
+            }
+
+            const char *label = region->label[0] ? region->label : mm_reservation_type_name(region->type);
+            uint64_t region_end = region->phys_base + region->length;
+
+            kprint("  ");
+            kprint(label);
+            kprint(": 0x");
+            kprint_hex(region->phys_base);
+            kprint(" - 0x");
+            kprint_hex(region_end - 1);
+            kprint(" (");
+            kprint_decimal((uint32_t)(region->length / 1024));
+            kprint(" KB)\n");
+        }
+        if (total_bytes > 0) {
+            kprint("  Total reserved:      ");
+            kprint_decimal((uint32_t)(total_bytes / 1024));
+            kprint(" KB\n");
+        }
+    });
+}
+
+static void initialize_reserved_regions(const struct limine_memmap_response *memmap) {
+    mm_reservations_reset();
+
+    record_allocator_metadata_reservation();
+    record_memmap_reservations(memmap);
+    record_framebuffer_reservation();
+    record_apic_reservation();
+
+    init_state.reserved_region_count = mm_reservations_count();
+    init_state.reserved_device_bytes = mm_reservations_total_bytes(MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS);
+
+    log_reserved_regions();
+}
+
+/* ========================================================================
+ * RESERVATION-AWARE USABLE MEMORY HANDLING
+ * ======================================================================== */
+
+static void register_usable_subrange(uint64_t start, uint64_t end) {
+    if (end <= start) {
+        return;
+    }
+
+    uint64_t aligned_start = align_up_u64(start, PAGE_SIZE_4KB);
+    uint64_t aligned_end = align_down_u64(end, PAGE_SIZE_4KB);
+
+    if (aligned_end <= aligned_start) {
+        return;
+    }
+
+    uint64_t aligned_size = aligned_end - aligned_start;
+    init_state.available_memory_bytes += aligned_size;
+
+    if (add_page_alloc_region(aligned_start, aligned_size, EFI_CONVENTIONAL_MEMORY) != 0) {
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("MM: WARNING - failed to register page allocator region\n");
+        });
+    }
+
+    if (buddy_add_zone(aligned_start, aligned_size, EFI_CONVENTIONAL_MEMORY) != 0) {
+        BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
+            kprint("MM: WARNING - failed to register buddy allocator zone\n");
+        });
+    }
+}
+
+static void register_usable_region(uint64_t base, uint64_t length) {
+    if (length == 0) {
+        return;
+    }
+
+    uint64_t end = base + length;
+    if (end <= base) {
+        return;
+    }
+
+    uint64_t cursor = base;
+    uint32_t count = mm_reservations_count();
+
+    for (uint32_t i = 0; i < count; i++) {
+        const mm_reserved_region_t *reservation = mm_reservations_get(i);
+        if (!reservation || reservation->length == 0) {
+            continue;
+        }
+
+        if ((reservation->flags & MM_RESERVATION_FLAG_EXCLUDE_ALLOCATORS) == 0) {
+            continue;
+        }
+
+        uint64_t res_start = reservation->phys_base;
+        uint64_t res_end = reservation->phys_base + reservation->length;
+
+        if (res_start >= end) {
+            break;
+        }
+
+        if (res_end <= cursor) {
+            continue;
+        }
+
+        if (res_start > cursor) {
+            register_usable_subrange(cursor, res_start);
+        }
+
+        if (res_end > cursor) {
+            cursor = res_end;
+        }
+
+        if (cursor >= end) {
+            break;
+        }
+    }
+
+    if (cursor < end) {
+        register_usable_subrange(cursor, end);
+    }
+}
 
 /* ========================================================================
  * ALLOCATOR BUFFER PREPARATION
@@ -281,47 +540,8 @@ static int initialize_memory_discovery(const struct limine_memmap_response *memm
         init_state.memory_regions_count++;
         init_state.total_memory_bytes += entry->length;
 
-        uint64_t effective_base = entry->base;
-        uint64_t effective_length = entry->length;
-
-        if (allocator_buffers.prepared && entry->type == LIMINE_MEMMAP_USABLE) {
-            uint64_t reserve_base = allocator_buffers.reserved_phys_base;
-            uint64_t reserve_end = reserve_base + allocator_buffers.reserved_phys_size;
-            uint64_t entry_end = entry->base + entry->length;
-
-            if (reserve_base < entry_end && reserve_end > entry->base) {
-                if (reserve_base > entry->base) {
-                    effective_length = reserve_base - entry->base;
-                    if (effective_length == 0) {
-                        effective_base = entry_end;
-                    }
-                } else {
-                    effective_length = 0;
-                    effective_base = entry_end;
-                }
-            }
-        }
-
-        if (entry->type == LIMINE_MEMMAP_USABLE && effective_length > 0) {
-            init_state.available_memory_bytes += effective_length;
-
-            if (add_page_alloc_region(effective_base, effective_length,
-                                      EFI_CONVENTIONAL_MEMORY) != 0) {
-                BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
-                    kprint("MM: WARNING - failed to register page allocator region\n");
-                });
-            }
-
-            if (buddy_add_zone(effective_base, effective_length,
-                               EFI_CONVENTIONAL_MEMORY) != 0) {
-                BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_INFO, {
-                    kprint("MM: WARNING - failed to register buddy allocator zone\n");
-                });
-            }
-        } else if (entry->type == LIMINE_MEMMAP_USABLE && effective_length == 0) {
-            BOOT_LOG_BLOCK(BOOT_LOG_LEVEL_DEBUG, {
-                kprint("MM: Skipped reserved metadata region from usable memory\n");
-            });
+        if (entry->type == LIMINE_MEMMAP_USABLE) {
+            register_usable_region(entry->base, entry->length);
         }
     }
 
@@ -477,6 +697,16 @@ static void display_memory_summary(void) {
         kprint_decimal((uint32_t)(init_state.allocator_metadata_bytes / 1024));
         kprint(" KB\n");
     }
+    if (init_state.reserved_region_count) {
+        kprint("Reserved Regions:      ");
+        kprint_decimal(init_state.reserved_region_count);
+        kprint("\n");
+    }
+    if (init_state.reserved_device_bytes) {
+        kprint("Reserved Device Mem:   ");
+        kprint_decimal((uint32_t)(init_state.reserved_device_bytes / 1024));
+        kprint(" KB\n");
+    }
     kprint("Kernel Heap:           ");
     kprint(init_state.kernel_heap_done ? "OK" : "FAILED");
     kprint("\n");
@@ -538,6 +768,8 @@ int init_memory_system(const struct limine_memmap_response *memmap,
         kernel_panic("MM: Failed to size allocator metadata buffers");
         return -1;
     }
+
+    initialize_reserved_regions(memmap);
 
     mm_init_phys_virt_helpers();
 

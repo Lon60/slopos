@@ -86,6 +86,7 @@ mm_sources += files(
   'mm/kernel_heap.c',
   'mm/early_paging.c',
   'mm/uefi_memory.c',
+  'mm/memory_reservations.c',
   'mm/buddy_alloc.c',
   'mm/vmem_regions.c',
   'mm/memory_init.c',
