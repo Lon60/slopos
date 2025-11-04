@@ -95,7 +95,8 @@ video_dir = meson.current_source_dir() / 'video'
 video_sources += files(
   'video/framebuffer.c',
   'video/graphics.c',
-  'video/font.c'
+  'video/font.c',
+  'video/splash.c'
 )
 
 # Lib directory - utility functions
