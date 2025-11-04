@@ -17,6 +17,7 @@
 #include "shutdown.h"
 #include "../drivers/pic.h"
 #include "../drivers/apic.h"
+#include "../drivers/pit.h"
 #include "../drivers/irq.h"
 #include "../drivers/interrupt_test.h"
 #include "../sched/task.h"
@@ -396,6 +397,13 @@ static int boot_step_irq_setup(void) {
     return 0;
 }
 
+static int boot_step_timer_setup(void) {
+    boot_debug("Initializing programmable interval timer...");
+    pit_init(PIT_DEFAULT_FREQUENCY_HZ);
+    boot_debug("Programmable interval timer configured.");
+    return 0;
+}
+
 static int boot_step_apic_setup(void) {
     boot_debug("Detecting Local APIC...");
     if (apic_detect()) {
@@ -475,6 +483,7 @@ BOOT_INIT_STEP(drivers, "gdt/tss", boot_step_gdt_setup);
 BOOT_INIT_STEP(drivers, "idt", boot_step_idt_setup);
 BOOT_INIT_STEP(drivers, "pic", boot_step_pic_setup);
 BOOT_INIT_STEP(drivers, "irq dispatcher", boot_step_irq_setup);
+BOOT_INIT_STEP(drivers, "timer", boot_step_timer_setup);
 BOOT_INIT_STEP(drivers, "apic", boot_step_apic_setup);
 BOOT_INIT_STEP(drivers, "interrupt tests", boot_step_interrupt_tests);
 

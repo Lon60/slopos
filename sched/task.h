@@ -90,6 +90,7 @@ typedef struct task {
 
     /* Scheduling information */
     uint64_t time_slice;                 /* CPU time quantum */
+    uint64_t time_slice_remaining;       /* Remaining ticks in current quantum */
     uint64_t total_runtime;              /* Total CPU time used */
     uint64_t creation_time;              /* Task creation timestamp */
     uint32_t yield_count;                /* Number of voluntary yields */

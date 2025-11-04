@@ -240,6 +240,7 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     task->entry_point = entry_point;
     task->entry_arg = arg;
     task->time_slice = 10;  /* Default time slice */
+    task->time_slice_remaining = task->time_slice;
     task->total_runtime = 0;
     task->creation_time = debug_get_timestamp();
     task->yield_count = 0;
@@ -357,6 +358,7 @@ int task_terminate(uint32_t task_id) {
     task->stack_pointer = 0;
     task->stack_size = 0;
     task->time_slice = 0;
+    task->time_slice_remaining = 0;
     task->total_runtime = 0;
     task->yield_count = 0;
     task->entry_point = NULL;
@@ -512,6 +514,7 @@ int init_task_manager(void) {
         task_manager.tasks[i].yield_count = 0;
         task_manager.tasks[i].last_run_timestamp = 0;
         task_manager.tasks[i].waiting_on_task_id = INVALID_TASK_ID;
+        task_manager.tasks[i].time_slice_remaining = 0;
     }
 
     return 0;

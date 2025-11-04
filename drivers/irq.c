@@ -5,6 +5,7 @@
 #include "keyboard.h"
 #include "../boot/idt.h"
 #include "../boot/log.h"
+#include "../sched/scheduler.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -111,6 +112,8 @@ static void timer_irq_handler(uint8_t irq, struct interrupt_frame *frame, void *
             kprintln("");
         });
     }
+
+    scheduler_timer_tick();
 }
 
 static void keyboard_irq_handler(uint8_t irq, struct interrupt_frame *frame, void *context) {
@@ -271,6 +274,8 @@ void irq_dispatch(struct interrupt_frame *frame) {
     entry->handler(irq, frame, entry->context);
 
     acknowledge_irq(irq);
+
+    scheduler_handle_post_irq();
 }
 
 int irq_get_stats(uint8_t irq, struct irq_stats *out_stats) {

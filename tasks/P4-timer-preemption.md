@@ -18,4 +18,4 @@ Scheduling is strictly cooperative today. Without a periodic interrupt, long-run
 - The kernel services timer interrupts without crashing and performs preemptive context switches when configured.
 - Tasks that yield cooperatively keep working; long loops without yields still cede CPU after a quantum.
 - `make build` succeeds.
-- `make test` succeeds.
+- Verification runs succeed: `make test` exits cleanly and `make boot-log` captures a log without regressions.

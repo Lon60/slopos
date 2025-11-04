@@ -151,9 +151,29 @@ void scheduler_task_exit(void) __attribute__((noreturn));
 int scheduler_is_enabled(void);
 
 /*
+ * Enable or disable preemption globally
+ */
+void scheduler_set_preemption_enabled(int enabled);
+
+/*
+ * Check if preemption is enabled
+ */
+int scheduler_is_preemption_enabled(void);
+
+/*
  * Get current task from scheduler
  */
 task_t *scheduler_get_current_task(void);
+
+/*
+ * Timer tick handler for the scheduler
+ */
+void scheduler_timer_tick(void);
+
+/*
+ * Handle deferred rescheduling after interrupt processing
+ */
+void scheduler_handle_post_irq(void);
 
 /* ========================================================================
  * STATISTICS AND MONITORING
