@@ -9,6 +9,7 @@
 #include "../boot/constants.h"
 #include "../boot/debug.h"
 #include "../drivers/serial.h"
+#include "../mm/kernel_heap.h"
 #include "../mm/paging.h"
 #include "task.h"
 #include "scheduler.h"
@@ -20,6 +21,12 @@ extern void task_entry_wrapper(void);
 #define PROCESS_VM_FLAG_WRITE                 0x02
 #define PROCESS_VM_FLAG_EXEC                  0x04
 #define PROCESS_VM_FLAG_USER                  0x08
+
+static inline uint64_t read_cr3(void) {
+    uint64_t value;
+    __asm__ volatile ("movq %%cr3, %0" : "=r"(value));
+    return value;
+}
 
 /* Forward declarations */
 uint32_t create_process_vm(void);
@@ -179,22 +186,33 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
         return INVALID_TASK_ID;
     }
 
-    /* Create process VM space for task */
-    uint32_t process_id = create_process_vm();
-    if (process_id == INVALID_PROCESS_ID) {
-        kprint("task_create: Failed to create process VM\n");
-        return INVALID_TASK_ID;
-    }
+    uint32_t process_id = INVALID_PROCESS_ID;
+    uint64_t stack_base = 0;
 
-    /* Allocate stack for task */
-    uint64_t stack_base = process_vm_alloc(process_id, TASK_STACK_SIZE,
-                                          PROCESS_VM_FLAG_READ |
-                                          PROCESS_VM_FLAG_WRITE |
-                                          PROCESS_VM_FLAG_USER);
-    if (!stack_base) {
-        kprint("task_create: Failed to allocate stack\n");
-        destroy_process_vm(process_id);
-        return INVALID_TASK_ID;
+    if (flags & TASK_FLAG_KERNEL_MODE) {
+        void *stack = kmalloc(TASK_STACK_SIZE);
+        if (!stack) {
+            kprint("task_create: Failed to allocate kernel stack\n");
+            return INVALID_TASK_ID;
+        }
+
+        stack_base = (uint64_t)stack;
+    } else {
+        process_id = create_process_vm();
+        if (process_id == INVALID_PROCESS_ID) {
+            kprint("task_create: Failed to create process VM\n");
+            return INVALID_TASK_ID;
+        }
+
+        stack_base = process_vm_alloc(process_id, TASK_STACK_SIZE,
+                                      PROCESS_VM_FLAG_READ |
+                                      PROCESS_VM_FLAG_WRITE |
+                                      PROCESS_VM_FLAG_USER);
+        if (!stack_base) {
+            kprint("task_create: Failed to allocate stack\n");
+            destroy_process_vm(process_id);
+            return INVALID_TASK_ID;
+        }
     }
 
     /* Assign task ID */
@@ -232,10 +250,14 @@ uint32_t task_create(const char *name, task_entry_t entry_point, void *arg,
     /* Initialize CPU context */
     init_task_context(task);
 
-    /* Record page directory for context switches */
-    process_page_dir_t *page_dir = process_vm_get_page_dir(process_id);
-    if (page_dir && page_dir->pml4_phys) {
-        task->context.cr3 = page_dir->pml4_phys;
+    if (flags & TASK_FLAG_KERNEL_MODE) {
+        task->process_id = INVALID_PROCESS_ID;
+        task->context.cr3 = read_cr3() & ~0xFFFULL;
+    } else {
+        process_page_dir_t *page_dir = process_vm_get_page_dir(process_id);
+        if (page_dir && page_dir->pml4_phys) {
+            task->context.cr3 = page_dir->pml4_phys;
+        }
     }
 
     /* Update task manager */
@@ -306,6 +328,8 @@ int task_terminate(uint32_t task_id) {
     if (task->process_id != INVALID_PROCESS_ID) {
         destroy_process_vm(task->process_id);
         destroy_process_vma_space(task->process_id);
+    } else if (task->stack_base) {
+        kfree((void *)task->stack_base);
     }
 
     /* Clear task control block */

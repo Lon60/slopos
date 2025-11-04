@@ -101,7 +101,9 @@ video_sources += files(
 # Lib directory - utility functions
 lib_dir = meson.current_source_dir() / 'lib'
 lib_sources += files(
-  'lib/memory.c'
+  'lib/memory.c',
+  'lib/unit_test.c',
+  'lib/stacktrace.c'
 )
 
 # Drivers directory
@@ -122,6 +124,7 @@ drivers_sources += files(
 sched_dir = meson.current_source_dir() / 'sched'
 sched_sources += files(
   'sched/scheduler.c',
+  'sched/kthread.c',
   'sched/task.c',
   'sched/test_tasks.c',
   'sched/context_switch.s'

@@ -180,8 +180,8 @@ static void initialize_kernel_subsystems(void) {
 
         interrupt_test_init(&test_config);
         int passed = run_all_interrupt_tests(&test_config);
-        struct test_stats *stats = test_get_stats();
-        int failed_tests = stats ? stats->failed_tests : 0;
+        const struct test_stats *stats = test_get_stats();
+        uint32_t failed_tests = stats ? stats->core.failed_cases : 0;
         interrupt_test_cleanup();
 
         kprint("INTERRUPT_TEST: Boot run passed tests -> ");
@@ -190,7 +190,7 @@ static void initialize_kernel_subsystems(void) {
 
         if (test_config.shutdown_on_complete) {
             kprintln("INTERRUPT_TEST: Auto shutdown enabled after harness");
-            interrupt_test_request_shutdown(failed_tests);
+            interrupt_test_request_shutdown((int)failed_tests);
         }
 
         early_debug_string("SlopOS: Interrupt test framework complete\n");

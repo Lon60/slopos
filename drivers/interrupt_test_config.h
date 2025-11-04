@@ -50,6 +50,7 @@ struct interrupt_test_config {
     uint32_t suite_mask;
     uint32_t timeout_ms;
     int shutdown_on_complete;
+    int stacktrace_demo;
 };
 
 void interrupt_test_config_init_defaults(struct interrupt_test_config *config);
