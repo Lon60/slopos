@@ -22,6 +22,7 @@
 static void splash_delay_ms(uint32_t milliseconds) {
     // Simple busy-wait delay (approximately 1ms per 1000000 iterations on typical hardware)
     // This is rough timing but sufficient for splash screen display
+    // TODO: Replace with PIT-backed timing once the timer driver is available this early.
     volatile uint64_t cycles = (uint64_t)milliseconds * 1000000;
     for (volatile uint64_t i = 0; i < cycles; i++) {
         __asm__ volatile ("nop");
