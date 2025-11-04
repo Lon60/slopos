@@ -9,11 +9,10 @@
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
 #include "../third_party/limine/limine.h"
+#include "page_alloc.h"
 #include "phys_virt.h"
 
 /* Descriptor sizing helpers from allocator implementations */
-size_t page_allocator_descriptor_size(void);
-uint32_t page_allocator_max_supported_frames(void);
 size_t buddy_allocator_block_descriptor_size(void);
 uint32_t buddy_allocator_max_supported_blocks(void);
 
@@ -22,9 +21,6 @@ void kernel_panic(const char *message);
 
 /* Memory subsystem initialization functions */
 void init_kernel_memory_layout(void);
-int init_page_allocator(void *frame_array, uint32_t max_frames);
-int finalize_page_allocator(void);
-int add_page_alloc_region(uint64_t start_addr, uint64_t size, uint8_t type);
 int init_buddy_allocator(void *block_array, uint32_t max_blocks);
 int buddy_add_zone(uint64_t start_addr, uint64_t size, uint8_t zone_type);
 int init_kernel_heap(void);

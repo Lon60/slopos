@@ -10,13 +10,10 @@
 #include "../boot/constants.h"
 #include "../boot/shutdown.h"
 #include "../mm/kernel_heap.h"
+#include "../mm/paging.h"
 #include "../mm/phys_virt.h"
 #include <stddef.h>
 #include <stdint.h>
-
-/* External paging helpers */
-extern int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
-extern int unmap_page(uint64_t vaddr);
 
 // Global test state
 static struct test_context test_ctx = {0};

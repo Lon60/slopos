@@ -8,6 +8,7 @@
 #include "../drivers/serial.h"
 #include "../boot/limine_protocol.h"
 #include "memory_layout.h"
+#include "paging.h"
 #include "phys_virt.h"
 
 static uint64_t cached_identity_limit;
@@ -17,7 +18,6 @@ static uint64_t kernel_virt_start;
 static int translation_initialized;
 
 void *memset(void *dest, int value, size_t n);
-extern uint64_t virt_to_phys(uint64_t virt_addr);
 
 void mm_init_phys_virt_helpers(void) {
     const kernel_memory_layout_t *layout = get_kernel_memory_layout();

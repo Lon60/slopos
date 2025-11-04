@@ -9,14 +9,11 @@
 #include "../boot/constants.h"
 #include "../drivers/serial.h"
 #include "kernel_heap.h"
+#include "page_alloc.h"
+#include "paging.h"
 
 /* Forward declarations */
 void kernel_panic(const char *message);
-uint64_t alloc_page_frame(uint32_t flags);
-int free_page_frame(uint64_t phys_addr);
-int map_page_4kb(uint64_t vaddr, uint64_t paddr, uint64_t flags);
-int unmap_page(uint64_t vaddr);
-uint64_t virt_to_phys(uint64_t vaddr);
 
 /* ========================================================================
  * KERNEL HEAP CONSTANTS
