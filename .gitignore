@@ -1,3 +1,4 @@
+.cache/
 builddir/
 third_party/*
 !third_party/limine
