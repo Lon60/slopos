@@ -329,27 +329,14 @@ int task_terminate(uint32_t task_id) {
     /* Wake any dependents waiting on this task */
     release_task_dependents(resolved_id);
 
-<<<<<<< HEAD
     /* Free resources based on task mode */
-    if (task->flags & TASK_FLAG_KERNEL_MODE) {
-        /* Kernel tasks: free stack from kernel heap */
-        if (task->stack_base != 0) {
-            kfree((void *)task->stack_base);
-        }
-    } else {
-        /* User mode tasks: free process VM space */
-        if (task->process_id != INVALID_PROCESS_ID) {
-            destroy_process_vm(task->process_id);
-            destroy_process_vma_space(task->process_id);
-        }
-=======
-    /* Free process VM space */
     if (task->process_id != INVALID_PROCESS_ID) {
+        /* User mode tasks: free process VM space */
         destroy_process_vm(task->process_id);
         destroy_process_vma_space(task->process_id);
     } else if (task->stack_base) {
+        /* Kernel tasks: free stack from kernel heap */
         kfree((void *)task->stack_base);
->>>>>>> upstream/master
     }
 
     /* Clear task control block */
