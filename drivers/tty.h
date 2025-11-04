@@ -29,5 +29,11 @@
  */
 size_t tty_read_line(char *buffer, size_t buffer_size);
 
+/*
+ * Notify the TTY subsystem that new input is available.
+ * Typically invoked from keyboard or serial interrupt handlers.
+ */
+void tty_notify_input_ready(void);
+
 #endif /* DRIVERS_TTY_H */
 

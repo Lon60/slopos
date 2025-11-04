@@ -5,6 +5,151 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../sched/scheduler.h"
+
+/* ========================================================================
+ * WAIT QUEUE FOR BLOCKING INPUT
+ * ======================================================================== */
+
+#define TTY_MAX_WAITERS MAX_TASKS
+
+typedef struct tty_wait_queue {
+    task_t *tasks[TTY_MAX_WAITERS];
+    size_t head;
+    size_t tail;
+    size_t count;
+} tty_wait_queue_t;
+
+static tty_wait_queue_t tty_wait_queue = {0};
+
+static inline void tty_interrupts_disable(void) {
+    __asm__ volatile ("cli" : : : "memory");
+}
+
+static inline void tty_interrupts_enable(void) {
+    __asm__ volatile ("sti" : : : "memory");
+}
+
+static inline void tty_cpu_relax(void) {
+    __asm__ volatile ("pause");
+}
+
+static int tty_wait_queue_push(task_t *task) {
+    if (!task || tty_wait_queue.count >= TTY_MAX_WAITERS) {
+        return -1;
+    }
+
+    tty_wait_queue.tasks[tty_wait_queue.tail] = task;
+    tty_wait_queue.tail = (tty_wait_queue.tail + 1) % TTY_MAX_WAITERS;
+    tty_wait_queue.count++;
+    return 0;
+}
+
+static task_t *tty_wait_queue_pop(void) {
+    if (tty_wait_queue.count == 0) {
+        return NULL;
+    }
+
+    task_t *task = tty_wait_queue.tasks[tty_wait_queue.head];
+    tty_wait_queue.tasks[tty_wait_queue.head] = NULL;
+    tty_wait_queue.head = (tty_wait_queue.head + 1) % TTY_MAX_WAITERS;
+    tty_wait_queue.count--;
+    return task;
+}
+
+static int tty_input_available(void) {
+    if (keyboard_has_input()) {
+        return 1;
+    }
+
+    if (serial_data_available(SERIAL_COM1_PORT)) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int tty_input_available_locked(void) {
+    if (keyboard_buffer_pending()) {
+        return 1;
+    }
+
+    if (serial_data_available(SERIAL_COM1_PORT)) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static void tty_block_until_input_ready(void) {
+    if (!scheduler_is_enabled()) {
+        tty_cpu_relax();
+        return;
+    }
+
+    task_t *current = task_get_current();
+    if (!current) {
+        tty_cpu_relax();
+        return;
+    }
+
+    if (tty_input_available()) {
+        return;
+    }
+
+    tty_interrupts_disable();
+
+    if (tty_input_available_locked()) {
+        tty_interrupts_enable();
+        return;
+    }
+
+    if (tty_wait_queue_push(current) != 0) {
+        tty_interrupts_enable();
+        yield();
+        return;
+    }
+
+    task_set_state(current->task_id, TASK_STATE_BLOCKED);
+    unschedule_task(current);
+
+    tty_interrupts_enable();
+
+    schedule();
+}
+
+void tty_notify_input_ready(void) {
+    if (!scheduler_is_enabled()) {
+        return;
+    }
+
+    tty_interrupts_disable();
+
+    task_t *task_to_wake = NULL;
+
+    while (tty_wait_queue.count > 0) {
+        task_t *candidate = tty_wait_queue_pop();
+        if (!candidate) {
+            continue;
+        }
+
+        if (!task_is_blocked(candidate)) {
+            continue;
+        }
+
+        task_to_wake = candidate;
+        break;
+    }
+
+    tty_interrupts_enable();
+
+    if (task_to_wake) {
+        if (unblock_task(task_to_wake) != 0) {
+            /* Failed to unblock task; nothing else to do */
+        }
+    }
+}
+
 /* ========================================================================
  * HELPER FUNCTIONS
  * ======================================================================== */
@@ -77,7 +222,7 @@ size_t tty_read_line(char *buffer, size_t buffer_size) {
         /* Block until character is available from keyboard or serial */
         char c = 0;
         while (!tty_poll_input_char(&c)) {
-            /* Busy wait - could be enhanced with task scheduling later */
+            tty_block_until_input_ready();
         }
         
         /* Handle Enter key - finish line input */

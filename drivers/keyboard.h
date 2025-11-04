@@ -36,6 +36,12 @@ char keyboard_getchar(void);
 int keyboard_has_input(void);
 
 /*
+ * Check if a character is waiting in the keyboard buffer without
+ * modifying interrupt state. Callers must ensure interrupts are disabled.
+ */
+int keyboard_buffer_pending(void);
+
+/*
  * Get raw scancode from buffer (for debugging)
  * Returns scancode if available, 0 otherwise
  * Non-blocking function

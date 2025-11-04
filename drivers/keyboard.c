@@ -1,5 +1,6 @@
 #include "keyboard.h"
 #include "serial.h"
+#include "tty.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -332,6 +333,7 @@ void keyboard_handle_scancode(uint8_t scancode) {
     char ascii = translate_scancode(scancode);
     if (ascii != 0) {
         buffer_push(&char_buffer, ascii);
+        tty_notify_input_ready();
     }
 }
 
@@ -341,6 +343,10 @@ char keyboard_getchar(void) {
 
 int keyboard_has_input(void) {
     return buffer_has_data(&char_buffer);
+}
+
+int keyboard_buffer_pending(void) {
+    return char_buffer.count > 0;
 }
 
 uint8_t keyboard_get_scancode(void) {
